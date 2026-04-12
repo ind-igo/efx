@@ -7,7 +7,7 @@ const root = @import("root");
 pub const MAX_EFFECTS: usize = if (@hasDecl(root, "libfx_max_effects"))
     root.libfx_max_effects
 else
-    32;
+    64;
 
 // ── Constants ─────────────────────────────────────────────────────────
 
@@ -20,14 +20,13 @@ var next_slot: usize = 0;
 const Slot = struct {
     state: *anyopaque = undefined,
     vtable: *const anyopaque = undefined,
-    installed: bool = false,
 };
 
 threadlocal var slots: [MAX_EFFECTS]Slot = @splat(Slot{});
 
 // ── Op — operation signature marker ───────────────────────────────────
 
-/// Marker for an effect operation's argument and return types.
+/// Operation signature: `Op(ArgType, ReturnType)`.
 /// Use as a union variant payload inside the union passed to `Effect()`.
 ///
 ///   fx.Op([]const u8, void)         — void-returning operation
@@ -52,7 +51,7 @@ pub const ResetToken = struct {
     prev: Slot,
 };
 
-// ── Effect — generate a dispatchable effect type from a tagged union ──
+// ── Effect — dispatchable effect type from a tagged union ─────────────
 
 pub fn Effect(comptime U: type) type {
     const union_info = @typeInfo(U).@"union";
@@ -140,8 +139,6 @@ pub fn Effect(comptime U: type) type {
         ) fields[@intFromEnum(op)].type.ResultType {
             const s = @atomicLoad(usize, &slot, .monotonic);
             const entry = slots[s];
-            if (!entry.installed)
-                @panic("effect not installed: " ++ @typeName(Self));
             const vt: *const Vtable = @ptrCast(@alignCast(entry.vtable));
             const trampoline = @field(vt.*, fields[@intFromEnum(op)].name);
             return trampoline(entry.state, arg);
@@ -151,8 +148,8 @@ pub fn Effect(comptime U: type) type {
 
 // ── init — batch-install handlers ─────────────────────────────────────
 
-/// Install one or more effect handlers. Each element of the tuple is
-/// a `.{ EffectType, &handler_struct }` pair.
+/// Install one or more effect handlers. Each tuple element is
+/// `.{ EffectType, &handler_struct }`. Assigns slot IDs on first use.
 ///
 ///   fx.init(.{
 ///       .{ Logger, &logger },
@@ -165,20 +162,21 @@ pub fn init(pairs: anytype) void {
         const H = HandlerType(@TypeOf(handler_ptr));
         const s = E.ensureSlot();
         const vt = comptime E.makeVtable(H);
-        slots[s] = .{ .state = @ptrCast(handler_ptr), .vtable = @ptrCast(vt), .installed = true };
+        slots[s] = .{ .state = @ptrCast(handler_ptr), .vtable = @ptrCast(vt) };
     }
 }
 
 // ── set — swap a single handler ───────────────────────────────────────
 
-/// Swap a single effect's handler. Returns a `ResetToken` capturing
-/// the previous state for later restoration via `reset()`.
+/// Swap one handler, returning a `ResetToken` for the previous state.
+/// Works with or without a prior `init`. If no handler was previously
+/// installed, calling `exec` after `reset` is undefined behavior.
 pub fn set(comptime E: type, handler_ptr: anytype) ResetToken {
     const H = HandlerType(@TypeOf(handler_ptr));
     const s = E.ensureSlot();
     const token = ResetToken{ .index = s, .prev = slots[s] };
     const vt = comptime E.makeVtable(H);
-    slots[s] = .{ .state = @ptrCast(handler_ptr), .vtable = @ptrCast(vt), .installed = true };
+    slots[s] = .{ .state = @ptrCast(handler_ptr), .vtable = @ptrCast(vt) };
     return token;
 }
 
@@ -188,6 +186,22 @@ pub fn set(comptime E: type, handler_ptr: anytype) ResetToken {
 /// for scoped handler swaps.
 pub fn reset(token: ResetToken) void {
     slots[token.index] = token.prev;
+}
+
+// ── snapshot/restore — propagate effects across threads ───────────────
+
+/// A copy of the threadlocal slots array. 1KB at the default MAX_EFFECTS.
+/// Handler state pointers inside must outlive any thread using the snapshot.
+pub const Snapshot = [MAX_EFFECTS]Slot;
+
+/// Capture the current thread's installed handlers.
+pub fn snapshot() Snapshot {
+    return slots;
+}
+
+/// Install a snapshot into the current thread's slots.
+pub fn restore(snap: Snapshot) void {
+    slots = snap;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -341,4 +355,22 @@ test "error union return type" {
     handler.should_fail = true;
     const err_result = TestFallible.exec(.check, "test");
     try testing.expectError(error.TestFailure, err_result);
+}
+
+// ── Test: snapshot/restore across threads ─────────────────────────────
+
+test "snapshot/restore across thread" {
+    var handler = StderrLoggerHandler{};
+    init(.{.{ TestLogger, &handler }});
+
+    const snap = snapshot();
+    const thread = try std.Thread.spawn(.{}, struct {
+        fn run(s: Snapshot) void {
+            restore(s);
+            TestLogger.exec(.info, "from child thread");
+        }
+    }.run, .{snap});
+    thread.join();
+
+    try testing.expectEqual(@as(usize, 1), handler.call_count);
 }
