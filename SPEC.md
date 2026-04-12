@@ -171,60 +171,68 @@ The generated dispatch wrapper and trampoline pass the return type through at co
 
 ### Missing Handler Behavior
 
-If no handler is found for an effect, dispatch panics with a descriptive message naming the effect and call site. This is a programming error — same category as null unwrap or out-of-bounds access.
+If no handler is installed and `exec` is called, `slot` is still `UNASSIGNED` (`maxInt(usize)`), so the threadlocal array access is out-of-bounds — caught by Zig's safety checks in debug/safe mode, undefined behavior in release. This is a programming error, same category as null unwrap or out-of-bounds access.
+
+For the edge case of `set` without prior `init` followed by `reset` (restoring an empty slot) and then `exec`: the vtable pointer is `undefined`, which is also undefined behavior. The contract is: don't call `exec` on an effect with no handler installed.
 
 ### Handler Slot Overflow
 
-If the number of distinct effects exceeds `MAX_EFFECTS` (default 32, configurable via build option), `init` or `set` panics at runtime.
+If the number of distinct effects exceeds `MAX_EFFECTS` (default 64, configurable via `pub const libfx_max_effects` in the root module), `init` or `set` panics at runtime.
 
 ## Effect Slots
 
-Effects are stored in direct-indexed parallel arrays, keyed by a runtime-assigned slot index:
+Effects are stored in a direct-indexed threadlocal array of structs, keyed by a runtime-assigned slot index:
 
 ```zig
 const UNASSIGNED = std.math.maxInt(usize);
-const MAX_EFFECTS = 32;
+const MAX_EFFECTS = 64;
 
 var next_slot: usize = 0;  // global, atomically incremented on first use of each effect
 
-threadlocal var states: [MAX_EFFECTS]*anyopaque = undefined;
-threadlocal var vtables: [MAX_EFFECTS]*const anyopaque = undefined;
-threadlocal var installed: [MAX_EFFECTS]bool = .{false} ** MAX_EFFECTS;
+const Slot = struct {
+    state: *anyopaque = undefined,
+    vtable: *const anyopaque = undefined,
+};
+
+threadlocal var slots: [MAX_EFFECTS]Slot = @splat(Slot{});
 ```
 
-Each `Effect()` type has a static `var slot: usize = UNASSIGNED`. On first `init` or `set`, the slot is assigned atomically:
+Each `Effect()` type has a static `var slot: usize = UNASSIGNED`. On first `init` or `set`, the slot is assigned atomically via `ensureSlot()` using a compare-and-swap. Slot assignment is thread-safe and happens exactly once per effect type. After assignment, `slot` is effectively a constant — every subsequent read is a plain load with no contention.
 
-```zig
-fn ensureSlot() usize {
-    const current = @atomicLoad(usize, &slot, .acquire);
-    if (current != UNASSIGNED) return current;
-
-    const new_slot = @atomicRmw(usize, &next_slot, .Add, 1, .acq_rel);
-    if (new_slot >= MAX_EFFECTS) @panic("too many effects");
-
-    // If another thread already assigned, use theirs
-    return @cmpxchgStrong(usize, &slot, UNASSIGNED, new_slot, .acq_rel, .acquire) orelse new_slot;
-}
-```
-
-Slot assignment is thread-safe and happens exactly once per effect type. After assignment, `slot` is effectively a constant — every subsequent read is a plain load with no contention. The atomics only fire on first use.
-
-Total threadlocal storage: `MAX_EFFECTS * 17` bytes (default 544 bytes). No search — dispatch indexes directly by slot.
+Each slot is 16 bytes (two pointers). Total threadlocal storage: `MAX_EFFECTS * 16` bytes (default 1KB). No search — dispatch indexes directly by slot.
 
 ### Dispatch Path
 
 For `Logger.exec(.info, "msg")`:
 1. Load `Logger.slot` — a global read (write-once, effectively constant after init).
-2. Check `installed[slot]` — panic if not installed.
-3. Load `states[slot]` and `vtables[slot]` — two threadlocal array loads, O(1).
-4. Index into the vtable by the operation's comptime variant index.
-5. Call the trampoline with state and arg.
+2. Load `slots[slot]` — one threadlocal struct load (state + vtable), O(1).
+3. Index into the vtable by the operation's comptime variant index.
+4. Call the trampoline with state and arg.
 
-No linear search. Dispatch cost is three loads plus the vtable call.
+No linear search, no branches. Dispatch cost is two loads plus the vtable call.
 
 ### Thread Behavior
 
-Effect slots are threadlocal. New threads start with empty slots — effects must be explicitly installed per thread. This is consistent with Zig's explicit-over-implicit philosophy.
+Effect slots are threadlocal. New threads start with empty slots — effects must be explicitly installed per thread via `init`, or propagated from a parent thread via `snapshot`/`restore`. This is consistent with Zig's explicit-over-implicit philosophy.
+
+### Snapshot and Restore
+
+To propagate effects across thread boundaries, the library provides `snapshot` and `restore`. A snapshot is a copy of the threadlocal slots array (1KB at the default `MAX_EFFECTS`):
+
+```zig
+const snap = fx.snapshot();
+const thread = try std.Thread.spawn(.{}, struct {
+    fn run(s: fx.Snapshot) void {
+        fx.restore(s);
+        // all parent's effects are now available
+        Logger.exec(.info, "from child thread");
+    }
+}.run, .{snap});
+```
+
+The snapshot copies slot pointers, not handler state. Handler state must outlive any thread using the snapshot — the same lifetime contract as passing any pointer across threads in Zig. The library does not track or enforce this; it is the caller's responsibility.
+
+This mechanism is intentionally decoupled from threading. It works for OS threads, thread pools, task queues, or any other context where effects need to cross a boundary. The library provides the primitive; the user decides when to capture and when to restore.
 
 ## Type Erasure via Vtables
 
@@ -233,10 +241,10 @@ When `init` or `set` is called, the library generates a vtable at comptime for e
 1. Walks the effect's operation variants.
 2. For each operation, finds the matching method on the handler struct and verifies its signature. Missing or mismatched methods are compile errors.
 3. Generates a trampoline per operation that casts `*anyopaque` back to the concrete handler type and calls the method.
-4. Lays out all trampolines in a static array (the vtable). One vtable per handler-for-an-effect, stored in read-only memory, shared across threads.
-5. The vtable pointer is stored in `vtables[E.slot]` alongside the state in `states[E.slot]`.
+4. Lays out all trampolines in a static struct (the vtable). One vtable per handler-for-an-effect, stored in read-only memory, shared across threads.
+5. The vtable pointer and state pointer are stored together in `slots[E.slot]`.
 
-Users write typed methods on plain structs. All `@ptrCast`/`@alignCast` is internal to the library. At dispatch time, the cost is: one global load (slot) + two threadlocal array loads (state + vtable) + indexed call into the vtable.
+Users write typed methods on plain structs. All `@ptrCast`/`@alignCast` is internal to the library. At dispatch time, the cost is: one global load (slot) + one threadlocal struct load (state + vtable) + indexed call into the vtable.
 
 ## Module Structure
 
