@@ -107,11 +107,9 @@ pub fn Effect(comptime U: type) type {
                     const method = @field(H, field.name);
                     const MethodInfo = @typeInfo(@TypeOf(method)).@"fn";
 
-                    if (MethodInfo.params.len != 2) {
-                        @compileError("Handler method '" ++ field.name ++ "' on '" ++ @typeName(H) ++ "' must take (*Self, ArgType)");
-                    }
-                    if (MethodInfo.params[0].type != *H) {
-                        @compileError("Handler method '" ++ field.name ++ "' on '" ++ @typeName(H) ++ "' first parameter must be *" ++ @typeName(H));
+                    const expect_params: usize = if (OpType.ArgType == void) 1 else 2;
+                    if (MethodInfo.params.len != expect_params) {
+                        @compileError("Handler method '" ++ field.name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
                     }
                     if (MethodInfo.return_type != OpType.ResultType) {
                         @compileError("Handler method '" ++ field.name ++ "' on '" ++ @typeName(H) ++ "' has wrong return type");
@@ -120,7 +118,11 @@ pub fn Effect(comptime U: type) type {
                     const trampoline = struct {
                         fn call(opaque_ptr: *anyopaque, arg: OpType.ArgType) OpType.ResultType {
                             const self: *H = @ptrCast(@alignCast(opaque_ptr));
-                            return @field(H, field.name)(self, arg);
+                            if (OpType.ArgType == void) {
+                                return @field(H, field.name)(self);
+                            } else {
+                                return @field(H, field.name)(self, arg);
+                            }
                         }
                     };
                     @field(vt, field.name) = &trampoline.call;

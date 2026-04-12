@@ -1,0 +1,86 @@
+/// Clock effect example — wall clock in production, virtual time in tests.
+const std = @import("std");
+const fx = @import("libfx");
+
+// ── Effect definition ────────────────────────────────────────────────
+
+pub const Clock = fx.Effect(union(enum) {
+    timestamp_ms: fx.Op(void, i64),
+    sleep_ms: fx.Op(u64, void),
+});
+
+// ── Handlers ─────────────────────────────────────────────────────────
+
+/// Real wall clock.
+pub const SystemHandler = struct {
+    pub fn timestamp_ms(_: *SystemHandler) i64 {
+        return @divTrunc(std.time.milliTimestamp(), 1);
+    }
+
+    pub fn sleep_ms(_: *SystemHandler, ms: u64) void {
+        std.Thread.sleep(ms * std.time.ns_per_ms);
+    }
+};
+
+/// Virtual clock for deterministic testing. Time only advances via sleep.
+pub const VirtualHandler = struct {
+    now_ms: i64 = 0,
+
+    pub fn timestamp_ms(self: *VirtualHandler) i64 {
+        return self.now_ms;
+    }
+
+    pub fn sleep_ms(self: *VirtualHandler, ms: u64) void {
+        self.now_ms += @intCast(ms);
+    }
+};
+
+// ── Business logic ───────────────────────────────────────────────────
+
+/// Returns true if the token has expired.
+fn isExpired(issued_ms: i64, ttl_ms: i64) bool {
+    const now = Clock.exec(.timestamp_ms, {});
+    return now - issued_ms >= ttl_ms;
+}
+
+/// Poll until a deadline, sleeping between checks.
+fn waitUntil(deadline_ms: i64) void {
+    while (Clock.exec(.timestamp_ms, {}) < deadline_ms) {
+        Clock.exec(.sleep_ms, 100);
+    }
+}
+
+// ── Main ─────────────────────────────────────────────────────────────
+
+pub fn main() !void {
+    var handler = SystemHandler{};
+    fx.init(.{.{ Clock, &handler }});
+
+    const now = Clock.exec(.timestamp_ms, {});
+    std.debug.print("current time: {d}ms\n", .{now});
+    std.debug.print("expired (ttl=0): {}\n", .{isExpired(now, 0)});
+    std.debug.print("expired (ttl=9999999): {}\n", .{isExpired(now, 9999999)});
+}
+
+// ── Tests: deterministic with virtual clock ──────────────────────────
+
+test "isExpired with virtual clock" {
+    var clock = VirtualHandler{ .now_ms = 1000 };
+    fx.init(.{.{ Clock, &clock }});
+
+    // Token issued at t=500, TTL=400ms → expired at t=1000
+    try std.testing.expect(isExpired(500, 400));
+
+    // Token issued at t=500, TTL=600ms → not expired at t=1000
+    try std.testing.expect(!isExpired(500, 600));
+}
+
+test "waitUntil advances virtual time" {
+    var clock = VirtualHandler{ .now_ms = 0 };
+    fx.init(.{.{ Clock, &clock }});
+
+    waitUntil(500);
+
+    // Virtual clock advanced in 100ms steps to reach 500
+    try std.testing.expectEqual(@as(i64, 500), clock.now_ms);
+}
