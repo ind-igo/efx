@@ -13,15 +13,17 @@ else
 
 const UNASSIGNED = std.math.maxInt(usize);
 
-// ── Global slot counter (atomic, monotonically increasing) ────────────
-
 var next_slot: usize = 0;
 
-// ── Threadlocal effect arrays ─────────────────────────────────────────
+// ── Threadlocal effect slots ──────────────────────────────────────────
 
-threadlocal var states: [MAX_EFFECTS]*anyopaque = undefined;
-threadlocal var vtables: [MAX_EFFECTS]*const anyopaque = undefined;
-threadlocal var installed: [MAX_EFFECTS]bool = @splat(false);
+const Slot = struct {
+    state: *anyopaque = undefined,
+    vtable: *const anyopaque = undefined,
+    installed: bool = false,
+};
+
+threadlocal var slots: [MAX_EFFECTS]Slot = @splat(Slot{});
 
 // ── Op — operation signature marker ───────────────────────────────────
 
@@ -46,10 +48,8 @@ fn isOpType(comptime T: type) bool {
 // ── ResetToken ────────────────────────────────────────────────────────
 
 pub const ResetToken = struct {
-    slot_index: usize,
-    prev_state: *anyopaque,
-    prev_vtable: *const anyopaque,
-    prev_installed: bool,
+    index: usize,
+    prev: Slot,
 };
 
 // ── Effect — generate a dispatchable effect type from a tagged union ──
@@ -85,10 +85,8 @@ pub fn Effect(comptime U: type) type {
     return struct {
         const Self = @This();
 
-        /// Runtime-assigned slot index. Write-once via `ensureSlot()`.
         pub var slot: usize = UNASSIGNED;
 
-        /// Atomically assign a slot index on first use.
         pub fn ensureSlot() usize {
             const current = @atomicLoad(usize, &slot, .acquire);
             if (current != UNASSIGNED) return current;
@@ -99,8 +97,7 @@ pub fn Effect(comptime U: type) type {
             return @cmpxchgStrong(usize, &slot, UNASSIGNED, new_slot, .acq_rel, .acquire) orelse new_slot;
         }
 
-        /// Generate a static vtable for handler type H at comptime.
-        pub fn makeVtable(comptime H: type) *const Vtable {
+        fn makeVtable(comptime H: type) *const Vtable {
             const vtable = comptime blk: {
                 var vt: Vtable = undefined;
                 for (fields) |field| {
@@ -137,20 +134,17 @@ pub fn Effect(comptime U: type) type {
             return &static.v;
         }
 
-        /// Dispatch an operation by comptime enum tag.
-        ///
-        ///   Logger.exec(.info, "hello")
-        ///   Config.exec(.get, "key")
         pub fn exec(
             comptime op: std.meta.FieldEnum(U),
             arg: fields[@intFromEnum(op)].type.ArgType,
         ) fields[@intFromEnum(op)].type.ResultType {
-            const s = @atomicLoad(usize, &slot, .acquire);
-            if (s == UNASSIGNED or !installed[s])
+            const s = @atomicLoad(usize, &slot, .monotonic);
+            const entry = slots[s];
+            if (!entry.installed)
                 @panic("effect not installed: " ++ @typeName(Self));
-            const vt: *const Vtable = @ptrCast(@alignCast(vtables[s]));
+            const vt: *const Vtable = @ptrCast(@alignCast(entry.vtable));
             const trampoline = @field(vt.*, fields[@intFromEnum(op)].name);
-            return trampoline(states[s], arg);
+            return trampoline(entry.state, arg);
         }
     };
 }
@@ -168,12 +162,10 @@ pub fn init(pairs: anytype) void {
     inline for (pairs) |pair| {
         const E = pair[0];
         const handler_ptr = pair[1];
-        const H = HandlerPtrChild(@TypeOf(handler_ptr));
+        const H = HandlerType(@TypeOf(handler_ptr));
         const s = E.ensureSlot();
         const vt = comptime E.makeVtable(H);
-        states[s] = @ptrCast(@constCast(handler_ptr));
-        vtables[s] = @ptrCast(vt);
-        installed[s] = true;
+        slots[s] = .{ .state = @ptrCast(handler_ptr), .vtable = @ptrCast(vt), .installed = true };
     }
 }
 
@@ -182,19 +174,11 @@ pub fn init(pairs: anytype) void {
 /// Swap a single effect's handler. Returns a `ResetToken` capturing
 /// the previous state for later restoration via `reset()`.
 pub fn set(comptime E: type, handler_ptr: anytype) ResetToken {
-    const H = HandlerPtrChild(@TypeOf(handler_ptr));
+    const H = HandlerType(@TypeOf(handler_ptr));
     const s = E.ensureSlot();
-    const was_installed = installed[s];
-    const token = ResetToken{
-        .slot_index = s,
-        .prev_state = if (was_installed) states[s] else undefined,
-        .prev_vtable = if (was_installed) vtables[s] else undefined,
-        .prev_installed = was_installed,
-    };
+    const token = ResetToken{ .index = s, .prev = slots[s] };
     const vt = comptime E.makeVtable(H);
-    states[s] = @ptrCast(@constCast(handler_ptr));
-    vtables[s] = @ptrCast(vt);
-    installed[s] = true;
+    slots[s] = .{ .state = @ptrCast(handler_ptr), .vtable = @ptrCast(vt), .installed = true };
     return token;
 }
 
@@ -203,16 +187,12 @@ pub fn set(comptime E: type, handler_ptr: anytype) ResetToken {
 /// Restore a previous handler from a `ResetToken`. Pair with `defer`
 /// for scoped handler swaps.
 pub fn reset(token: ResetToken) void {
-    if (token.prev_installed) {
-        states[token.slot_index] = token.prev_state;
-        vtables[token.slot_index] = token.prev_vtable;
-    }
-    installed[token.slot_index] = token.prev_installed;
+    slots[token.index] = token.prev;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
-fn HandlerPtrChild(comptime PtrType: type) type {
+fn HandlerType(comptime PtrType: type) type {
     const info = @typeInfo(PtrType);
     if (info != .pointer) @compileError("Expected pointer to handler struct");
     if (info.pointer.is_const) @compileError("Handler must be a mutable pointer (*T), not *const T — declare handler with 'var'");
@@ -245,7 +225,6 @@ const StderrLoggerHandler = struct {
 };
 
 const AltLoggerHandler = struct {
-    tag: []const u8 = "alt",
     call_count: usize = 0,
 
     fn info(self: *AltLoggerHandler, _: []const u8) void {
