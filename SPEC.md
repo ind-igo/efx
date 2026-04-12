@@ -239,6 +239,38 @@ Users write typed methods on plain structs. All `@ptrCast`/`@alignCast` is inter
 
 Single file: `src/libfx.zig`. The library is ~300-400 lines — small enough that splitting would add complexity without aiding navigation.
 
+## Testing
+
+Effects are naturally testable -- handler structs *are* the mocks. No framework needed.
+
+```zig
+const TestLogger = struct {
+    messages: std.ArrayList([]const u8),
+
+    fn info(self: *TestLogger, msg: []const u8) void {
+        self.messages.append(msg) catch {};
+    }
+
+    fn err(self: *TestLogger, msg: []const u8) void {
+        self.messages.append(msg) catch {};
+    }
+};
+
+test "processOrder logs the order id" {
+    var test_logger = TestLogger{ .messages = std.ArrayList([]const u8).init(testing.allocator) };
+    defer test_logger.messages.deinit();
+
+    fx.init(.{ .{ Logger, &test_logger } });
+
+    processOrder("order_123");
+
+    try testing.expectEqual(@as(usize, 1), test_logger.messages.items.len);
+    try testing.expectEqualStrings("processing order_123", test_logger.messages.items[0]);
+}
+```
+
+Each test installs its own handlers, fully isolated. Test handlers capture calls for assertion, return canned values, or simulate failures -- whatever the test needs.
+
 ## Performance Targets
 
 - Handler dispatch: ~5ns (direct array index + vtable call, no search)
