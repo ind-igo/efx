@@ -1,4 +1,4 @@
-# efu: Tail-Resumptive Effects for Zig
+# libfx: Tail-Resumptive Effects for Zig
 
 A Zig library for dynamically-scoped ambient context through algebraic effects, restricted to the tail-resumptive subset. Complements Zig's `Io` and explicit allocator passing — resources with ownership stay explicit, ambient operational context goes through effects.
 
@@ -10,39 +10,39 @@ A Zig library for dynamically-scoped ambient context through algebraic effects, 
 
 **Comptime-generated dispatch.** Effect declarations produce type-safe operation wrappers via metaprogramming. Type erasure is fully internal via comptime-generated trampolines — users never see `*anyopaque`.
 
-**Thread-local handler stack.** Bounded threadlocal array. Push on enter, pop on exit with `defer`. No allocation in the dispatch path.
+**Thread-local effect slots.** Direct-indexed threadlocal arrays keyed by comptime effect ID. O(1) dispatch with no search. No allocation in the dispatch path.
 
 ## API
 
 ### Declaring an Effect
 
-Pass a tagged union to `Effect()`. Each variant is an operation. Use `efu.Op` to declare the argument type and optional return type for each variant.
+Pass a tagged union to `Effect()`. Each variant is an operation. Use `fx.Op` to declare the argument type and optional return type for each variant.
 
 ```zig
-const efu = @import("efu");
+const fx = @import("libfx");
 
 // void-returning operations — Op with one type param defaults return to void
-pub const Logger = efu.Effect(union(enum) {
-    info: efu.Op([]const u8),
-    err: efu.Op([]const u8),
+pub const Logger = fx.Effect(union(enum) {
+    info: fx.Op([]const u8),
+    err: fx.Op([]const u8),
 });
 
 // Operations with return types — Op(ArgType, ReturnType)
-pub const Config = efu.Effect(union(enum) {
-    get: efu.Op([]const u8, ?[]const u8),
-    get_int: efu.Op([]const u8, ?i64),
+pub const Config = fx.Effect(union(enum) {
+    get: fx.Op([]const u8, ?[]const u8),
+    get_int: fx.Op([]const u8, ?i64),
 });
 
 // Multiple arguments — use a struct as the arg type
-pub const Tracing = efu.Effect(union(enum) {
-    start_span: efu.Op(struct { name: []const u8, parent: ?u64 = null }, u64),
-    end_span: efu.Op(u64),
+pub const Tracing = fx.Effect(union(enum) {
+    start_span: fx.Op(struct { name: []const u8, parent: ?u64 = null }, u64),
+    end_span: fx.Op(u64),
 });
 ```
 
 `Effect()` returns a type containing:
-- `Op` — the operation union (with `efu.Op` wrappers stripped, handlers see arg types directly)
-- `id` — unique comptime identifier (static address, integer comparison)
+- `Op` — the operation union (with `fx.Op` wrappers stripped, handlers see arg types directly)
+- `slot` — runtime-assigned index into the effect slot arrays. Assigned once on first `init` or `set` call via a global counter. Write-once, then read forever. Used as a direct array index for O(1) dispatch.
 - One dispatch wrapper per variant: `Logger.info("msg")`, `Config.get("KEY")`
 
 ### Writing a Handler
@@ -106,112 +106,143 @@ const JsonLogger = struct {
 
 ### Installing Handlers
 
-`efu.init` installs handlers onto the thread-local stack. `deinit` removes them. Use `defer` for safety.
+Three functions: `init`, `set`, `reset`.
+
+**`init`** — batch install, used at startup. Assigns slot IDs on first use. Fire and forget.
 
 ```zig
 pub fn main() !void {
     var logger = StderrLogger{ .writer = std.io.getStdErr().writer().any() };
-    var metrics = PrometheusMetrics{ ... };
+    var config = EnvConfig{};
 
-    const effects = efu.init(.{
+    fx.init(.{
         .{ Logger, &logger },
-        .{ Metrics, &metrics },
+        .{ Config, &config },
     });
-    defer effects.deinit();
 
     Logger.info("starting");
     try run();
 }
 ```
 
-Handlers are popped in reverse order on `deinit`. Defers guarantee cleanup on all exit paths — normal return, error return, or panic.
+**`set`** — swap a single effect's handler, returns a token capturing the previous state.
+
+**`reset`** — restore a previous handler from a token. Pair with `defer` for scoped swaps.
+
+```zig
+fn handleRequest(req: Request) void {
+    var req_logger = RequestLogger{ .request_id = req.id };
+    const prev = fx.set(Logger, &req_logger);
+    defer fx.reset(prev);
+
+    // req_logger active here
+    processOrder(req.order_id);
+}
+// previous Logger restored on scope exit
+```
 
 ### Error Propagation
 
 The `Result` type flows through dispatch unchanged. If an effect declares an error union as its result, callers use `try` normally:
 
 ```zig
-pub const Database = efu.Effect(union(enum) {
-    query: efu.Op([]const u8, anyerror![]Row),
+pub const FeatureFlags = fx.Effect(union(enum) {
+    is_enabled: fx.Op([]const u8, anyerror!bool),
 });
 
+// Handler method returns the error union directly:
+const RemoteFlags = struct {
+    client: *http.Client,
+    base_url: []const u8,
+
+    fn is_enabled(self: *RemoteFlags, flag: []const u8) anyerror!bool {
+        const response = try self.client.get(self.base_url, flag);
+        return std.mem.eql(u8, response.body, "true");
+    }
+};
+
 // At the call site:
-const rows = try Database.query("SELECT * FROM users");
+const dark_mode = try FeatureFlags.is_enabled("dark_mode");
 ```
 
-The generated dispatch wrapper and trampoline pass the `Result` type through at comptime. No wrapping, no special handling. Zig's error inference works through effect calls because the return type is determined statically by the `Result` mapping.
+The generated dispatch wrapper and trampoline pass the return type through at comptime. No wrapping, no special handling. Zig's error inference works through effect calls because the return type is determined statically from the `fx.Op` declaration.
 
 ### Missing Handler Behavior
 
 If no handler is found for an effect, dispatch panics with a descriptive message naming the effect and call site. This is a programming error — same category as null unwrap or out-of-bounds access.
 
-### Handler Stack Overflow
+### Handler Slot Overflow
 
-If the handler stack exceeds `MAX_HANDLERS` (default 64), `init` panics with a message reporting the current depth. Same philosophy — a programming error, not a recoverable condition.
+If the number of distinct effects exceeds `MAX_EFFECTS` (default 32, configurable via build option), `init` or `set` panics at runtime.
 
-## Handler Stack
+## Effect Slots
+
+Effects are stored in direct-indexed parallel arrays, keyed by a runtime-assigned slot index:
 
 ```zig
-const MAX_HANDLERS = 64;
+const UNASSIGNED = std.math.maxInt(usize);
+const MAX_EFFECTS = 32;
 
-const HandlerEntry = struct {
-    effect_id: usize,
-    state: *anyopaque,
-    vtable: *const anyopaque,  // points to comptime-generated static array of trampolines
-};
+var next_slot: usize = 0;  // global, atomically incremented on first use of each effect
 
-threadlocal var handler_stack: [MAX_HANDLERS]HandlerEntry = undefined;
-threadlocal var handler_stack_len: usize = 0;
+threadlocal var states: [MAX_EFFECTS]*anyopaque = undefined;
+threadlocal var vtables: [MAX_EFFECTS]*const anyopaque = undefined;
+threadlocal var installed: [MAX_EFFECTS]bool = .{false} ** MAX_EFFECTS;
 ```
 
-Each handler entry is 24 bytes. 64 entries = 1,536 bytes of threadlocal storage.
+Each `Effect()` type has a static `var slot: usize = UNASSIGNED`. On first `init` or `set`, the slot is assigned atomically:
 
-Dispatch walks top-down, finds the first match for the effect's id, loads the vtable pointer, and calls the trampoline at the index corresponding to the operation variant (known at comptime).
+```zig
+fn ensureSlot() usize {
+    const current = @atomicLoad(usize, &slot, .acquire);
+    if (current != UNASSIGNED) return current;
+
+    const new_slot = @atomicRmw(usize, &next_slot, .Add, 1, .acq_rel);
+    if (new_slot >= MAX_EFFECTS) @panic("too many effects");
+
+    // If another thread already assigned, use theirs
+    return @cmpxchgStrong(usize, &slot, UNASSIGNED, new_slot, .acq_rel, .acquire) orelse new_slot;
+}
+```
+
+Slot assignment is thread-safe and happens exactly once per effect type. After assignment, `slot` is effectively a constant — every subsequent read is a plain load with no contention. The atomics only fire on first use.
+
+Total threadlocal storage: `MAX_EFFECTS * 17` bytes (default 544 bytes). No search — dispatch indexes directly by slot.
+
+### Dispatch Path
+
+For `Logger.info("msg")`:
+1. Load `Logger.slot` — a global read (write-once, effectively constant after init).
+2. Load `states[slot]` and `vtables[slot]` — two threadlocal array loads, O(1).
+3. Index into the vtable by the operation's comptime variant index.
+4. Call the trampoline with state and arg.
+
+No linear search. Dispatch cost is three loads plus the vtable call.
+
+### Thread Behavior
+
+Effect slots are threadlocal. New threads start with empty slots — effects must be explicitly installed per thread. This is consistent with Zig's explicit-over-implicit philosophy.
 
 ## Type Erasure via Vtables
 
-When `init` is called, the library generates a vtable at comptime for each handler:
+When `init` or `set` is called, the library generates a vtable at comptime for each handler:
 
 1. Walks the effect's operation variants.
 2. For each operation, finds the matching method on the handler struct and verifies its signature. Missing or mismatched methods are compile errors.
 3. Generates a trampoline per operation that casts `*anyopaque` back to the concrete handler type and calls the method.
 4. Lays out all trampolines in a static array (the vtable). One vtable per handler-for-an-effect, stored in read-only memory, shared across threads.
-5. The handler stack entry stores a pointer to this vtable.
+5. The vtable pointer is stored in `vtables[E.slot]` alongside the state in `states[E.slot]`.
 
-Users write typed methods on plain structs. All `@ptrCast`/`@alignCast` is internal to the library. At dispatch time, the cost is: stack walk + one pointer load (vtable) + indexed call into the vtable.
-
-## Bind
-
-`bind()` walks the handler stack once and returns a `Bound` instance with a direct function pointer. Subsequent calls bypass the stack walk entirely.
-
-```zig
-fn hotLoop(data: []const u8) void {
-    const log = Logger.bind();
-    for (data) |_| {
-        log.info("processing");  // direct call, ~1.5ns
-    }
-}
-```
-
-`tryBind()` returns an optional for graceful degradation.
-
-**Lifetime rules:** a `Bound` instance is valid only within the scope of the handler it captured. Do not store across handler boundaries, return from functions, or pass across task boundaries.
+Users write typed methods on plain structs. All `@ptrCast`/`@alignCast` is internal to the library. At dispatch time, the cost is: one global load (slot) + two threadlocal array loads (state + vtable) + indexed call into the vtable.
 
 ## Module Structure
 
-```
-src/
-├── efu.zig         // Public API re-exports
-├── effect.zig      // Effect(), Op(), dispatch wrappers
-├── handler.zig     // init(), deinit(), handler stack
-└── bind.zig        // bind(), tryBind(), Bound type
-```
+Single file: `src/libfx.zig`. The library is ~300-400 lines — small enough that splitting would add complexity without aiding navigation.
 
 ## Performance Targets
 
-- Handler dispatch: ~20ns (stack walk + trampoline + switch)
-- Bind dispatch: ~1.5ns (direct call through captured pointer)
-- Handler init/deinit: ~5ns per handler
+- Handler dispatch: ~5ns (direct array index + vtable call, no search)
+- Handler init/set/reset: ~5ns per effect
 - Zero allocations in the dispatch path
 
 ## Non-Goals
