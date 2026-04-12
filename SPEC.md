@@ -16,18 +16,18 @@ A Zig library for dynamically-scoped ambient context through algebraic effects, 
 
 ### Declaring an Effect
 
-Pass a tagged union to `Effect()`. Each variant is an operation. Use `fx.Op` to declare the argument type and optional return type for each variant.
+Pass a tagged union to `Effect()`. Each variant is an operation. Use `fx.Op(ArgType, ReturnType)` to declare each operation's signature.
 
 ```zig
 const fx = @import("libfx");
 
-// void-returning operations — Op with one type param defaults return to void
+// void-returning operations
 pub const Logger = fx.Effect(union(enum) {
-    info: fx.Op([]const u8),
-    err: fx.Op([]const u8),
+    info: fx.Op([]const u8, void),
+    err: fx.Op([]const u8, void),
 });
 
-// Operations with return types — Op(ArgType, ReturnType)
+// Operations with return types
 pub const Config = fx.Effect(union(enum) {
     get: fx.Op([]const u8, ?[]const u8),
     get_int: fx.Op([]const u8, ?i64),
@@ -36,14 +36,13 @@ pub const Config = fx.Effect(union(enum) {
 // Multiple arguments — use a struct as the arg type
 pub const Tracing = fx.Effect(union(enum) {
     start_span: fx.Op(struct { name: []const u8, parent: ?u64 = null }, u64),
-    end_span: fx.Op(u64),
+    end_span: fx.Op(u64, void),
 });
 ```
 
 `Effect()` returns a type containing:
-- `Op` — the operation union (with `fx.Op` wrappers stripped, handlers see arg types directly)
 - `slot` — runtime-assigned index into the effect slot arrays. Assigned once on first `init` or `set` call via a global counter. Write-once, then read forever. Used as a direct array index for O(1) dispatch.
-- One dispatch wrapper per variant: `Logger.info("msg")`, `Config.get("KEY")`
+- `exec(comptime .variant, arg)` — type-safe dispatch. Zig cannot generate named methods dynamically via `@Type`, so dispatch uses a comptime enum tag: `Logger.exec(.info, "msg")`, `Config.exec(.get, "KEY")`.
 
 ### Writing a Handler
 
@@ -120,7 +119,7 @@ pub fn main() !void {
         .{ Config, &config },
     });
 
-    Logger.info("starting");
+    Logger.exec(.info, "starting");
     try run();
 }
 ```
@@ -150,6 +149,9 @@ pub const FeatureFlags = fx.Effect(union(enum) {
     is_enabled: fx.Op([]const u8, anyerror!bool),
 });
 
+// Dispatch:
+// const dark_mode = try FeatureFlags.exec(.is_enabled, "dark_mode");
+
 // Handler method returns the error union directly:
 const RemoteFlags = struct {
     client: *http.Client,
@@ -162,7 +164,7 @@ const RemoteFlags = struct {
 };
 
 // At the call site:
-const dark_mode = try FeatureFlags.is_enabled("dark_mode");
+const dark_mode = try FeatureFlags.exec(.is_enabled, "dark_mode");
 ```
 
 The generated dispatch wrapper and trampoline pass the return type through at comptime. No wrapping, no special handling. Zig's error inference works through effect calls because the return type is determined statically from the `fx.Op` declaration.
@@ -211,11 +213,12 @@ Total threadlocal storage: `MAX_EFFECTS * 17` bytes (default 544 bytes). No sear
 
 ### Dispatch Path
 
-For `Logger.info("msg")`:
+For `Logger.exec(.info, "msg")`:
 1. Load `Logger.slot` — a global read (write-once, effectively constant after init).
-2. Load `states[slot]` and `vtables[slot]` — two threadlocal array loads, O(1).
-3. Index into the vtable by the operation's comptime variant index.
-4. Call the trampoline with state and arg.
+2. Check `installed[slot]` — panic if not installed.
+3. Load `states[slot]` and `vtables[slot]` — two threadlocal array loads, O(1).
+4. Index into the vtable by the operation's comptime variant index.
+5. Call the trampoline with state and arg.
 
 No linear search. Dispatch cost is three loads plus the vtable call.
 
