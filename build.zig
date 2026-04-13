@@ -37,14 +37,20 @@ pub fn build(b: *std.Build) void {
     }
 
     // Benchmarks
-    const bench_mod = b.createModule(.{
-        .root_source_file = b.path("bench/dispatch.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{.{ .name = "fx", .module = libfx }},
-    });
-    const bench_exe = b.addExecutable(.{ .name = "bench-dispatch", .root_module = bench_mod });
-    b.installArtifact(bench_exe);
-    const bench_run = b.addRunArtifact(bench_exe);
-    b.step("bench", "Run dispatch benchmark").dependOn(&bench_run.step);
+    const benches = [_]struct { name: []const u8, file: []const u8 }{
+        .{ .name = "bench-dispatch", .file = "bench/dispatch.zig" },
+        .{ .name = "bench-cache", .file = "bench/cache_pressure.zig" },
+    };
+    const bench_step = b.step("bench", "Run all benchmarks");
+    for (benches) |bm| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path(bm.file),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "fx", .module = libfx }},
+        });
+        const exe = b.addExecutable(.{ .name = bm.name, .root_module = mod });
+        b.installArtifact(exe);
+        bench_step.dependOn(&b.addRunArtifact(exe).step);
+    }
 }
