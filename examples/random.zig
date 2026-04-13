@@ -52,13 +52,11 @@ pub const SeededHandler = struct {
 
 // ── Business logic ───────────────────────────────────────────────────
 
-/// Pick a random item from a slice.
 fn pick(comptime T: type, items: []const T) T {
     const idx = Random.exec(.range, .{ .min = 0, .max = items.len - 1 });
     return items[idx];
 }
 
-/// Simulate a dice roll.
 fn rollDice() u64 {
     return Random.exec(.range, .{ .min = 1, .max = 6 });
 }
@@ -85,7 +83,6 @@ test "seeded random is deterministic" {
     const a = Random.exec(.int_u64, {});
     const b = Random.exec(.int_u64, {});
 
-    // Same seed, same sequence
     var rng2 = SeededHandler.init(42);
     fx.init(.{.{ Random, &rng2 }});
 
@@ -100,7 +97,6 @@ test "pick is deterministic with seed" {
     const colors = [_][]const u8{ "red", "blue", "green", "yellow" };
     const first = pick([]const u8, &colors);
 
-    // Reset to same seed, get same pick
     var rng2 = SeededHandler.init(99);
     fx.init(.{.{ Random, &rng2 }});
 

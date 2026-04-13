@@ -75,7 +75,6 @@ pub const TestHandler = struct {
 
 fn processOrder(order_id: []const u8) void {
     Logger.exec(.info, order_id);
-    // ... real work would go here
     Logger.exec(.info, "order complete");
 }
 
@@ -95,7 +94,7 @@ pub fn main() !void {
     processOrder("order_43");
 }
 
-// ── Test: assert on captured messages ────────────────────────────────
+// ── Tests ────────────────────────────────────────────────────────────
 
 test "processOrder logs order id" {
     var handler = TestHandler{};

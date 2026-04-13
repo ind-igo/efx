@@ -37,13 +37,11 @@ pub const VirtualHandler = struct {
 
 // ── Business logic ───────────────────────────────────────────────────
 
-/// Returns true if the token has expired.
 fn isExpired(issued_ms: i64, ttl_ms: i64) bool {
     const now = Clock.exec(.timestamp_ms, {});
     return now - issued_ms >= ttl_ms;
 }
 
-/// Poll until a deadline, sleeping between checks.
 fn waitUntil(deadline_ms: i64) void {
     while (Clock.exec(.timestamp_ms, {}) < deadline_ms) {
         Clock.exec(.sleep_ms, 100);
@@ -68,10 +66,7 @@ test "isExpired with virtual clock" {
     var clock = VirtualHandler{ .now_ms = 1000 };
     fx.init(.{.{ Clock, &clock }});
 
-    // Token issued at t=500, TTL=400ms → expired at t=1000
     try std.testing.expect(isExpired(500, 400));
-
-    // Token issued at t=500, TTL=600ms → not expired at t=1000
     try std.testing.expect(!isExpired(500, 600));
 }
 
@@ -81,6 +76,5 @@ test "waitUntil advances virtual time" {
 
     waitUntil(500);
 
-    // Virtual clock advanced in 100ms steps to reach 500
     try std.testing.expectEqual(@as(i64, 500), clock.now_ms);
 }
