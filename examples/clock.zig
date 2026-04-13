@@ -1,6 +1,6 @@
 /// Clock effect example — wall clock in production, virtual time in tests.
 const std = @import("std");
-const fx = @import("libfx");
+const fx = @import("fx");
 
 // ── Effect definition ────────────────────────────────────────────────
 

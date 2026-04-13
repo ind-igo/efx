@@ -1,6 +1,6 @@
 /// Logger effect example — stderr, JSON, and test handlers for the same effect.
 const std = @import("std");
-const fx = @import("libfx");
+const fx = @import("fx");
 
 // ── Effect definition ────────────────────────────────────────────────
 

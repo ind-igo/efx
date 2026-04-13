@@ -2,5 +2,8 @@
 .zig-cache/
 zig-out/
 
+# Specs (internal design docs)
+specs/
+
 # Jujutsu
 .jj/
