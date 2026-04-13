@@ -86,6 +86,12 @@ pub fn Effect(comptime U: type) type {
 
         pub var slot: usize = UNASSIGNED;
 
+        /// Assign a slot index for this effect, or return the existing one.
+        /// Thread-safe: uses CAS to ensure exactly one assignment.
+        /// Note: if two threads race on first use of the same effect, the loser's
+        /// `next_slot` increment is wasted (one slot leaked). This is benign —
+        /// it only happens once per effect, only under concurrent first-use,
+        /// and typical usage initializes effects on a single thread at startup.
         pub fn ensureSlot() usize {
             const current = @atomicLoad(usize, &slot, .acquire);
             if (current != UNASSIGNED) return current;
@@ -139,7 +145,7 @@ pub fn Effect(comptime U: type) type {
             comptime op: std.meta.FieldEnum(U),
             arg: fields[@intFromEnum(op)].type.ArgType,
         ) fields[@intFromEnum(op)].type.ResultType {
-            const s = @atomicLoad(usize, &slot, .monotonic);
+            const s = @atomicLoad(usize, &slot, .acquire);
             const entry = slots[s];
             const vt: *const Vtable = @ptrCast(@alignCast(entry.vtable));
             const trampoline = @field(vt.*, fields[@intFromEnum(op)].name);
@@ -159,12 +165,7 @@ pub fn Effect(comptime U: type) type {
 ///   });
 pub fn init(pairs: anytype) void {
     inline for (pairs) |pair| {
-        const E = pair[0];
-        const handler_ptr = pair[1];
-        const H = HandlerType(@TypeOf(handler_ptr));
-        const s = E.ensureSlot();
-        const vt = comptime E.makeVtable(H);
-        slots[s] = .{ .state = @ptrCast(handler_ptr), .vtable = @ptrCast(vt) };
+        _ = set(pair[0], pair[1]);
     }
 }
 
@@ -375,4 +376,138 @@ test "snapshot/restore across thread" {
     thread.join();
 
     try testing.expectEqual(@as(usize, 1), handler.call_count);
+}
+
+// ── Test: void-arg operation ─────────────────────────────────────────
+
+const TestClock = Effect(union(enum) {
+    now: Op(void, i64),
+});
+
+const FixedClockHandler = struct {
+    time: i64 = 1000,
+
+    fn now(self: *FixedClockHandler) i64 {
+        return self.time;
+    }
+};
+
+test "void-arg operation" {
+    var clock = FixedClockHandler{ .time = 42 };
+    init(.{.{ TestClock, &clock }});
+
+    const result = TestClock.exec(.now, {});
+    try testing.expectEqual(@as(i64, 42), result);
+}
+
+// ── Test: nested set/reset ───────────────────────────────────────────
+
+test "nested set/reset restores correctly" {
+    var a = StderrLoggerHandler{};
+    var b = AltLoggerHandler{};
+    var c = StderrLoggerHandler{};
+    init(.{.{ TestLogger, &a }});
+
+    TestLogger.exec(.info, "a");
+    try testing.expectEqual(@as(usize, 1), a.call_count);
+
+    const token1 = set(TestLogger, &b);
+    TestLogger.exec(.info, "b");
+    try testing.expectEqual(@as(usize, 1), b.call_count);
+
+    const token2 = set(TestLogger, &c);
+    TestLogger.exec(.info, "c");
+    try testing.expectEqual(@as(usize, 1), c.call_count);
+
+    reset(token2);
+    TestLogger.exec(.info, "b again");
+    try testing.expectEqual(@as(usize, 2), b.call_count);
+
+    reset(token1);
+    TestLogger.exec(.info, "a again");
+    try testing.expectEqual(@as(usize, 2), a.call_count);
+}
+
+// ── Test: set without prior init ─────────────────────────────────────
+
+const SetOnlyEffect = Effect(union(enum) {
+    ping: Op(void, u32),
+});
+
+const SetOnlyHandler = struct {
+    fn ping(_: *SetOnlyHandler) u32 {
+        return 99;
+    }
+};
+
+test "set without prior init" {
+    var handler = SetOnlyHandler{};
+    const token = set(SetOnlyEffect, &handler);
+    defer reset(token);
+
+    const result = SetOnlyEffect.exec(.ping, {});
+    try testing.expectEqual(@as(u32, 99), result);
+}
+
+// ── Test: init overwrites previous handler ───────────────────────────
+
+test "init overwrites previous handler" {
+    var a = MapConfigHandler{ .value = "first" };
+    init(.{.{ TestConfig, &a }});
+    try testing.expectEqualStrings("first", TestConfig.exec(.get, "k").?);
+
+    var b = MapConfigHandler{ .value = "second" };
+    init(.{.{ TestConfig, &b }});
+    try testing.expectEqualStrings("second", TestConfig.exec(.get, "k").?);
+}
+
+// ── Test: different operations hit correct vtable entries ─────────────
+
+const MultiOpHandler = struct {
+    info_count: usize = 0,
+    err_count: usize = 0,
+
+    fn info(self: *MultiOpHandler, _: []const u8) void {
+        self.info_count += 1;
+    }
+
+    fn err(self: *MultiOpHandler, _: []const u8) void {
+        self.err_count += 1;
+    }
+};
+
+test "different operations dispatch independently" {
+    var handler = MultiOpHandler{};
+    init(.{.{ TestLogger, &handler }});
+
+    TestLogger.exec(.info, "a");
+    TestLogger.exec(.info, "b");
+    TestLogger.exec(.err, "c");
+
+    try testing.expectEqual(@as(usize, 2), handler.info_count);
+    try testing.expectEqual(@as(usize, 1), handler.err_count);
+}
+
+// ── Test: snapshot captures swapped handler ───────────────────────────
+
+test "snapshot captures swapped handler" {
+    var a = StderrLoggerHandler{};
+    var b = AltLoggerHandler{};
+    init(.{.{ TestLogger, &a }});
+
+    const token = set(TestLogger, &b);
+    defer reset(token);
+
+    // Snapshot after swap — should capture b, not a
+    const snap = snapshot();
+    const thread = try std.Thread.spawn(.{}, struct {
+        fn run(s: Snapshot) void {
+            restore(s);
+            TestLogger.exec(.info, "from child");
+        }
+    }.run, .{snap});
+    thread.join();
+
+    try testing.expectEqual(@as(usize, 1), b.call_count);
+    try testing.expectEqual(@as(usize, 0), a.call_count);
 }
