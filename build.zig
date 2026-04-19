@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
 
     // Examples — each is a standalone executable with its own tests
-    const examples = [_][]const u8{ "logger", "clock", "random", "dst", "pipeline" };
+    const examples = [_][]const u8{ "logger", "clock", "random", "dst", "pipeline", "concurrent" };
 
     for (examples) |name| {
         const example_mod = b.createModule(.{
