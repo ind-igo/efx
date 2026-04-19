@@ -1,5 +1,5 @@
 /// Concurrent effect propagation — fan out work across threads,
-/// each inheriting the caller's effect handlers via snapshot/restore.
+/// each inheriting the caller's effect handlers via the Scope value.
 const std = @import("std");
 const fx = @import("fx");
 
@@ -15,22 +15,19 @@ const Metrics = fx.Effect(union(enum) {
 
 // ── Business logic: parallel workers ────────────────────────────────
 
-fn worker(snap: fx.Snapshot, id: []const u8) u64 {
-    fx.restore(snap);
-    Logger.exec(.info, id);
-    Metrics.exec(.inc, "tasks.completed");
+fn worker(sc: *const fx.Scope, id: []const u8) u64 {
+    Logger.exec(sc, .info, id);
+    Metrics.exec(sc, .inc, "tasks.completed");
     return 1;
 }
 
-fn fanOut(io: std.Io, tasks: []const []const u8) u64 {
-    const snap = fx.snapshot();
-
+fn fanOut(io: std.Io, sc: *const fx.Scope, tasks: []const []const u8) u64 {
     var futures: [8]std.Io.Future(u64) = undefined;
     const n = @min(tasks.len, futures.len);
 
     for (tasks[0..n], futures[0..n]) |id, *f| {
-        f.* = io.concurrent(worker, .{ snap, id }) catch {
-            Logger.exec(.info, "spawn failed");
+        f.* = io.concurrent(worker, .{ sc, id }) catch {
+            Logger.exec(sc, .info, "spawn failed");
             continue;
         };
     }
@@ -63,15 +60,15 @@ const AtomicCounter = struct {
 pub fn main(init: std.process.Init) !void {
     var log = StderrLogger{};
     var met = AtomicCounter{};
-    fx.init(.{
+    const sc = fx.Scope.init(.{
         .{ Logger, &log },
         .{ Metrics, &met },
     });
 
     const tasks = [_][]const u8{ "fetch-users", "fetch-orders", "fetch-inventory", "build-report" };
 
-    Logger.exec(.info, "dispatching work");
-    const completed = fanOut(init.io, &tasks);
+    Logger.exec(&sc, .info, "dispatching work");
+    const completed = fanOut(init.io, &sc, &tasks);
 
     std.debug.print("\ncompleted: {d}, metrics count: {d}\n", .{
         completed,
@@ -100,16 +97,15 @@ const TestCounter = struct {
     }
 };
 
-test "worker uses restored effects" {
+test "worker uses effects from scope" {
     var log = TestLogger{};
     var met = TestCounter{};
-    fx.init(.{
+    const sc = fx.Scope.init(.{
         .{ Logger, &log },
         .{ Metrics, &met },
     });
 
-    const snap = fx.snapshot();
-    _ = worker(snap, "test-task");
+    _ = worker(&sc, "test-task");
 
     try std.testing.expectEqual(@as(usize, 1), log.len);
     try std.testing.expectEqualStrings("test-task", log.buf[0]);

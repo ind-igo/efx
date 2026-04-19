@@ -15,14 +15,10 @@ const UNASSIGNED = std.math.maxInt(usize);
 
 var next_slot: usize = 0;
 
-// ── Threadlocal effect slots ──────────────────────────────────────────
-
-const Slot = struct {
+pub const Slot = struct {
     state: *anyopaque = undefined,
     vtable: *const anyopaque = undefined,
 };
-
-threadlocal var slots: [MAX_EFFECTS]Slot = @splat(Slot{});
 
 // ── Op — operation signature marker ───────────────────────────────────
 
@@ -44,20 +40,12 @@ fn isOpType(comptime T: type) bool {
     return @hasDecl(T, "ArgType") and @hasDecl(T, "ResultType");
 }
 
-// ── ResetToken ────────────────────────────────────────────────────────
-
-pub const ResetToken = struct {
-    index: usize,
-    prev: Slot,
-};
-
 // ── Effect — dispatchable effect type from a tagged union ─────────────
 
 pub fn Effect(comptime U: type) type {
     const union_info = @typeInfo(U).@"union";
     const fields = union_info.fields;
 
-    // Vtable: a struct with one typed trampoline function pointer per operation.
     const Vtable = comptime blk: {
         var field_names: [fields.len][:0]const u8 = undefined;
         var field_types: [fields.len]type = undefined;
@@ -66,7 +54,7 @@ pub fn Effect(comptime U: type) type {
             if (!isOpType(OpType))
                 @compileError("Effect union variant '" ++ field.name ++ "' must have an Op(...) payload");
             field_names[i] = field.name;
-            field_types[i] = *const fn (*anyopaque, OpType.ArgType) OpType.ResultType;
+            field_types[i] = *const fn (*anyopaque, *const Scope, OpType.ArgType) OpType.ResultType;
         }
         break :blk @Struct(.auto, null, &field_names, &field_types, &@splat(.{}));
     };
@@ -74,6 +62,7 @@ pub fn Effect(comptime U: type) type {
     return struct {
         const Self = @This();
 
+        pub const Union = U;
         pub var slot: usize = UNASSIGNED;
 
         /// Assign a slot index for this effect, or return the existing one.
@@ -92,7 +81,7 @@ pub fn Effect(comptime U: type) type {
             return @cmpxchgStrong(usize, &slot, UNASSIGNED, new_slot, .acq_rel, .acquire) orelse new_slot;
         }
 
-        fn makeVtable(comptime H: type) *const Vtable {
+        pub fn makeVtable(comptime H: type) *const Vtable {
             const vtable = comptime blk: {
                 var vt: Vtable = undefined;
                 for (fields) |field| {
@@ -102,22 +91,26 @@ pub fn Effect(comptime U: type) type {
                     }
                     const method = @field(H, field.name);
                     const MethodInfo = @typeInfo(@TypeOf(method)).@"fn";
+                    const has_arg = OpType.ArgType != void;
+                    const base_params: usize = if (has_arg) 2 else 1;
 
-                    const expect_params: usize = if (OpType.ArgType == void) 1 else 2;
-                    if (MethodInfo.params.len != expect_params) {
-                        @compileError("Handler method '" ++ field.name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
-                    }
+                    const wants_scope = if (MethodInfo.params.len == base_params + 1) true
+                        else if (MethodInfo.params.len == base_params) false
+                        else @compileError("Handler method '" ++ field.name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
+
                     if (MethodInfo.return_type != OpType.ResultType) {
                         @compileError("Handler method '" ++ field.name ++ "' on '" ++ @typeName(H) ++ "' has wrong return type");
                     }
 
                     const trampoline = struct {
-                        fn call(opaque_ptr: *anyopaque, arg: OpType.ArgType) OpType.ResultType {
+                        fn call(opaque_ptr: *anyopaque, sc: *const Scope, arg: OpType.ArgType) OpType.ResultType {
                             const self: *H = @ptrCast(@alignCast(opaque_ptr));
-                            if (OpType.ArgType == void) {
-                                return @field(H, field.name)(self);
+                            if (wants_scope) {
+                                if (has_arg) return @field(H, field.name)(self, sc, arg)
+                                else return @field(H, field.name)(self, sc);
                             } else {
-                                return @field(H, field.name)(self, arg);
+                                if (has_arg) return @field(H, field.name)(self, arg)
+                                else return @field(H, field.name)(self);
                             }
                         }
                     };
@@ -132,70 +125,45 @@ pub fn Effect(comptime U: type) type {
         }
 
         pub fn exec(
+            sc: *const Scope,
             comptime op: std.meta.FieldEnum(U),
             arg: fields[@intFromEnum(op)].type.ArgType,
         ) fields[@intFromEnum(op)].type.ResultType {
             const s = @atomicLoad(usize, &slot, .acquire);
-            const entry = slots[s];
+            const entry = sc._slots[s];
             const vt: *const Vtable = @ptrCast(@alignCast(entry.vtable));
             const trampoline = @field(vt.*, fields[@intFromEnum(op)].name);
-            return trampoline(entry.state, arg);
+            return trampoline(entry.state, sc, arg);
         }
     };
 }
 
-// ── init — batch-install handlers ─────────────────────────────────────
+// ── Scope — explicit effect scope ─────────────────────────────────────
 
-/// Install one or more effect handlers. Each tuple element is
-/// `.{ EffectType, &handler_struct }`. Assigns slot IDs on first use.
-///
-///   fx.init(.{
-///       .{ Logger, &logger },
-///       .{ Config, &config },
-///   });
-pub fn init(pairs: anytype) void {
-    inline for (pairs) |pair| {
-        _ = set(pair[0], pair[1]);
+pub const Scope = struct {
+    _slots: [MAX_EFFECTS]Slot = @splat(Slot{}),
+
+    pub fn init(pairs: anytype) Scope {
+        var self = Scope{};
+        inline for (pairs) |pair| {
+            const E = pair[0];
+            const H = HandlerType(@TypeOf(pair[1]));
+            const s = E.ensureSlot();
+            const vt = comptime E.makeVtable(H);
+            self._slots[s] = .{ .state = @ptrCast(pair[1]), .vtable = @ptrCast(vt) };
+        }
+        return self;
     }
-}
 
-// ── set — swap a single handler ───────────────────────────────────────
-
-/// Swap one handler, returning a `ResetToken` for the previous state.
-/// Works with or without a prior `init`. If no handler was previously
-/// installed, calling `exec` after `reset` is undefined behavior.
-pub fn set(comptime E: type, handler_ptr: anytype) ResetToken {
-    const H = HandlerType(@TypeOf(handler_ptr));
-    const s = E.ensureSlot();
-    const token = ResetToken{ .index = s, .prev = slots[s] };
-    const vt = comptime E.makeVtable(H);
-    slots[s] = .{ .state = @ptrCast(handler_ptr), .vtable = @ptrCast(vt) };
-    return token;
-}
-
-// ── reset — restore previous handler ──────────────────────────────────
-
-/// Restore a previous handler from a `ResetToken`. Pair with `defer`
-/// for scoped handler swaps.
-pub fn reset(token: ResetToken) void {
-    slots[token.index] = token.prev;
-}
-
-// ── snapshot/restore — propagate effects across threads ───────────────
-
-/// A copy of the threadlocal slots array. 1KB at the default MAX_EFFECTS.
-/// Handler state pointers inside must outlive any thread using the snapshot.
-pub const Snapshot = [MAX_EFFECTS]Slot;
-
-/// Capture the current thread's installed handlers.
-pub fn snapshot() Snapshot {
-    return slots;
-}
-
-/// Install a snapshot into the current thread's slots.
-pub fn restore(snap: Snapshot) void {
-    slots = snap;
-}
+    pub fn bind(self: *const Scope, comptime E: type, handler_ptr: anytype) Scope {
+        const H = HandlerType(@TypeOf(handler_ptr));
+        const s = E.ensureSlot();
+        const vt = comptime E.makeVtable(H);
+        var copy = self.*;
+        copy._slots[s] = .{ .state = @ptrCast(handler_ptr), .vtable = @ptrCast(vt) };
+        return copy;
+    }
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -255,10 +223,10 @@ const MapConfigHandler = struct {
 
 test "basic void effect" {
     var handler = StderrLoggerHandler{};
-    init(.{.{ TestLogger, &handler }});
+    const sc = Scope.init(.{.{ TestLogger, &handler }});
 
-    TestLogger.exec(.info, "hello");
-    TestLogger.exec(.err, "oh no");
+    TestLogger.exec(&sc, .info, "hello");
+    TestLogger.exec(&sc, .err, "oh no");
 
     try testing.expectEqual(@as(usize, 2), handler.call_count);
 }
@@ -267,32 +235,10 @@ test "basic void effect" {
 
 test "effect with return values" {
     var config = MapConfigHandler{ .value = "42" };
-    init(.{.{ TestConfig, &config }});
+    const sc = Scope.init(.{.{ TestConfig, &config }});
 
-    const result = TestConfig.exec(.get, "key");
+    const result = TestConfig.exec(&sc, .get, "key");
     try testing.expectEqualStrings("42", result.?);
-}
-
-// ── Test: set/reset scoping ───────────────────────────────────────────
-
-test "set/reset scoping" {
-    var handler_a = StderrLoggerHandler{};
-    init(.{.{ TestLogger, &handler_a }});
-
-    TestLogger.exec(.info, "from A");
-    try testing.expectEqual(@as(usize, 1), handler_a.call_count);
-
-    var handler_b = AltLoggerHandler{};
-    const token = set(TestLogger, &handler_b);
-
-    TestLogger.exec(.info, "from B");
-    try testing.expectEqual(@as(usize, 1), handler_b.call_count);
-    try testing.expectEqual(@as(usize, 1), handler_a.call_count);
-
-    reset(token);
-
-    TestLogger.exec(.info, "from A again");
-    try testing.expectEqual(@as(usize, 2), handler_a.call_count);
 }
 
 // ── Test: multiple effects ────────────────────────────────────────────
@@ -301,13 +247,13 @@ test "multiple effects" {
     var logger = StderrLoggerHandler{};
     var config = MapConfigHandler{ .value = "hello" };
 
-    init(.{
+    const sc = Scope.init(.{
         .{ TestLogger, &logger },
         .{ TestConfig, &config },
     });
 
-    TestLogger.exec(.info, "msg");
-    const val = TestConfig.exec(.get, "key");
+    TestLogger.exec(&sc, .info, "msg");
+    const val = TestConfig.exec(&sc, .get, "key");
 
     try testing.expectEqual(@as(usize, 1), logger.call_count);
     try testing.expectEqualStrings("hello", val.?);
@@ -340,32 +286,14 @@ const FallibleHandler = struct {
 
 test "error union return type" {
     var handler = FallibleHandler{};
-    init(.{.{ TestFallible, &handler }});
+    const sc = Scope.init(.{.{ TestFallible, &handler }});
 
-    const result = try TestFallible.exec(.check, "test");
+    const result = try TestFallible.exec(&sc, .check, "test");
     try testing.expect(result);
 
     handler.should_fail = true;
-    const err_result = TestFallible.exec(.check, "test");
+    const err_result = TestFallible.exec(&sc, .check, "test");
     try testing.expectError(error.TestFailure, err_result);
-}
-
-// ── Test: snapshot/restore across threads ─────────────────────────────
-
-test "snapshot/restore across thread" {
-    var handler = StderrLoggerHandler{};
-    init(.{.{ TestLogger, &handler }});
-
-    const snap = snapshot();
-    const thread = try std.Thread.spawn(.{}, struct {
-        fn run(s: Snapshot) void {
-            restore(s);
-            TestLogger.exec(.info, "from child thread");
-        }
-    }.run, .{snap});
-    thread.join();
-
-    try testing.expectEqual(@as(usize, 1), handler.call_count);
 }
 
 // ── Test: void-arg operation ─────────────────────────────────────────
@@ -384,74 +312,70 @@ const FixedClockHandler = struct {
 
 test "void-arg operation" {
     var clock = FixedClockHandler{ .time = 42 };
-    init(.{.{ TestClock, &clock }});
+    const sc = Scope.init(.{.{ TestClock, &clock }});
 
-    const result = TestClock.exec(.now, {});
+    const result = TestClock.exec(&sc, .now, {});
     try testing.expectEqual(@as(i64, 42), result);
 }
 
-// ── Test: nested set/reset ───────────────────────────────────────────
+// ── Test: bind creates independent scope ─────────────────────────────
 
-test "nested set/reset restores correctly" {
+test "bind creates independent scope" {
+    var a = StderrLoggerHandler{};
+    var b = AltLoggerHandler{};
+
+    const parent = Scope.init(.{.{ TestLogger, &a }});
+    const child = parent.bind(TestLogger, &b);
+
+    TestLogger.exec(&parent, .info, "to parent");
+    TestLogger.exec(&child, .info, "to child");
+
+    try testing.expectEqual(@as(usize, 1), a.call_count);
+    try testing.expectEqual(@as(usize, 1), b.call_count);
+}
+
+// ── Test: bind preserves other handlers ──────────────────────────────
+
+test "bind preserves other handlers" {
+    var logger = StderrLoggerHandler{};
+    var config = MapConfigHandler{ .value = "inherited" };
+
+    const parent = Scope.init(.{
+        .{ TestLogger, &logger },
+        .{ TestConfig, &config },
+    });
+
+    var alt_logger = AltLoggerHandler{};
+    const child = parent.bind(TestLogger, &alt_logger);
+
+    TestLogger.exec(&child, .info, "msg");
+    const val = TestConfig.exec(&child, .get, "key");
+
+    try testing.expectEqual(@as(usize, 1), alt_logger.call_count);
+    try testing.expectEqualStrings("inherited", val.?);
+}
+
+// ── Test: nested bind scopes ─────────────────────────────────────────
+
+test "nested bind scopes" {
     var a = StderrLoggerHandler{};
     var b = AltLoggerHandler{};
     var c = StderrLoggerHandler{};
-    init(.{.{ TestLogger, &a }});
 
-    TestLogger.exec(.info, "a");
+    const root_env = Scope.init(.{.{ TestLogger, &a }});
+    const mid = root_env.bind(TestLogger, &b);
+    const leaf = mid.bind(TestLogger, &c);
+
+    TestLogger.exec(&root_env, .info, "a");
+    TestLogger.exec(&mid, .info, "b");
+    TestLogger.exec(&leaf, .info, "c");
+
     try testing.expectEqual(@as(usize, 1), a.call_count);
-
-    const token1 = set(TestLogger, &b);
-    TestLogger.exec(.info, "b");
     try testing.expectEqual(@as(usize, 1), b.call_count);
-
-    const token2 = set(TestLogger, &c);
-    TestLogger.exec(.info, "c");
     try testing.expectEqual(@as(usize, 1), c.call_count);
-
-    reset(token2);
-    TestLogger.exec(.info, "b again");
-    try testing.expectEqual(@as(usize, 2), b.call_count);
-
-    reset(token1);
-    TestLogger.exec(.info, "a again");
-    try testing.expectEqual(@as(usize, 2), a.call_count);
 }
 
-// ── Test: set without prior init ─────────────────────────────────────
-
-const SetOnlyEffect = Effect(union(enum) {
-    ping: Op(void, u32),
-});
-
-const SetOnlyHandler = struct {
-    fn ping(_: *SetOnlyHandler) u32 {
-        return 99;
-    }
-};
-
-test "set without prior init" {
-    var handler = SetOnlyHandler{};
-    const token = set(SetOnlyEffect, &handler);
-    defer reset(token);
-
-    const result = SetOnlyEffect.exec(.ping, {});
-    try testing.expectEqual(@as(u32, 99), result);
-}
-
-// ── Test: init overwrites previous handler ───────────────────────────
-
-test "init overwrites previous handler" {
-    var a = MapConfigHandler{ .value = "first" };
-    init(.{.{ TestConfig, &a }});
-    try testing.expectEqualStrings("first", TestConfig.exec(.get, "k").?);
-
-    var b = MapConfigHandler{ .value = "second" };
-    init(.{.{ TestConfig, &b }});
-    try testing.expectEqualStrings("second", TestConfig.exec(.get, "k").?);
-}
-
-// ── Test: different operations hit correct vtable entries ─────────────
+// ── Test: different operations dispatch independently ────────────────
 
 const MultiOpHandler = struct {
     info_count: usize = 0,
@@ -468,36 +392,113 @@ const MultiOpHandler = struct {
 
 test "different operations dispatch independently" {
     var handler = MultiOpHandler{};
-    init(.{.{ TestLogger, &handler }});
+    const sc = Scope.init(.{.{ TestLogger, &handler }});
 
-    TestLogger.exec(.info, "a");
-    TestLogger.exec(.info, "b");
-    TestLogger.exec(.err, "c");
+    TestLogger.exec(&sc, .info, "a");
+    TestLogger.exec(&sc, .info, "b");
+    TestLogger.exec(&sc, .err, "c");
 
     try testing.expectEqual(@as(usize, 2), handler.info_count);
     try testing.expectEqual(@as(usize, 1), handler.err_count);
 }
 
-// ── Test: snapshot captures swapped handler ───────────────────────────
+// ── Test: passed as parameter ────────────────────────────────────────
 
-test "snapshot captures swapped handler" {
-    var a = StderrLoggerHandler{};
-    var b = AltLoggerHandler{};
-    init(.{.{ TestLogger, &a }});
+test "passed as parameter" {
+    var logger = StderrLoggerHandler{};
+    const sc = Scope.init(.{.{ TestLogger, &logger }});
 
-    const token = set(TestLogger, &b);
-    defer reset(token);
-
-    // Snapshot after swap — should capture b, not a
-    const snap = snapshot();
-    const thread = try std.Thread.spawn(.{}, struct {
-        fn run(s: Snapshot) void {
-            restore(s);
-            TestLogger.exec(.info, "from child");
+    const S = struct {
+        fn doWork(fx: *const Scope) void {
+            TestLogger.exec(fx, .info, "from helper");
         }
-    }.run, .{snap});
+    };
+
+    S.doWork(&sc);
+    try testing.expectEqual(@as(usize, 1), logger.call_count);
+}
+
+// ── Test: cross-thread via pointer ───────────────────────────────────
+
+test "cross-thread via pointer" {
+    var handler = StderrLoggerHandler{};
+    const sc = Scope.init(.{.{ TestLogger, &handler }});
+
+    const thread = try std.Thread.spawn(.{}, struct {
+        fn run(fx: *const Scope) void {
+            TestLogger.exec(fx, .info, "from child thread");
+        }
+    }.run, .{&sc});
     thread.join();
 
-    try testing.expectEqual(@as(usize, 1), b.call_count);
-    try testing.expectEqual(@as(usize, 0), a.call_count);
+    try testing.expectEqual(@as(usize, 1), handler.call_count);
+}
+
+// ── Test: bind returns new scope ─────────────────────────────────────
+
+test "bind returns new scope" {
+    var a = MapConfigHandler{ .value = "first" };
+    const sc = Scope.init(.{.{ TestConfig, &a }});
+    try testing.expectEqualStrings("first", TestConfig.exec(&sc, .get, "k").?);
+
+    var b = MapConfigHandler{ .value = "second" };
+    const sc2 = sc.bind(TestConfig, &b);
+    try testing.expectEqualStrings("second", TestConfig.exec(&sc2, .get, "k").?);
+    try testing.expectEqualStrings("first", TestConfig.exec(&sc, .get, "k").?);
+}
+
+const SetOnlyEffect = Effect(union(enum) {
+    ping: Op(void, u32),
+});
+
+const SetOnlyHandler = struct {
+    fn ping(_: *SetOnlyHandler) u32 {
+        return 99;
+    }
+};
+
+test "single effect" {
+    var handler = SetOnlyHandler{};
+    const sc = Scope.init(.{.{ SetOnlyEffect, &handler }});
+
+    const result = SetOnlyEffect.exec(&sc, .ping, {});
+    try testing.expectEqual(@as(u32, 99), result);
+}
+
+// ── Test: handler receives scope for cross-effect dispatch ───────────
+
+const CrossEffectLogger = Effect(union(enum) {
+    log_and_count: Op([]const u8, void),
+});
+
+const CrossEffectCounter = Effect(union(enum) {
+    inc: Op(void, void),
+});
+
+const CounterHandler = struct {
+    count: usize = 0,
+    fn inc(self: *CounterHandler) void {
+        self.count += 1;
+    }
+};
+
+const CrossCallingHandler = struct {
+    fn log_and_count(self: *CrossCallingHandler, sc: *const Scope, _: []const u8) void {
+        _ = self;
+        CrossEffectCounter.exec(sc, .inc, {});
+    }
+};
+
+test "handler receives scope for cross-effect dispatch" {
+    var counter = CounterHandler{};
+    var logger = CrossCallingHandler{};
+    const sc = Scope.init(.{
+        .{ CrossEffectLogger, &logger },
+        .{ CrossEffectCounter, &counter },
+    });
+
+    CrossEffectLogger.exec(&sc, .log_and_count, "hello");
+    CrossEffectLogger.exec(&sc, .log_and_count, "world");
+
+    try testing.expectEqual(@as(usize, 2), counter.count);
 }

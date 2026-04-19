@@ -5,7 +5,6 @@ const std = @import("std");
 const fx = @import("fx");
 
 // ── 16 independent effects ──────────────────────────────────────────
-// Each has its own vtable in a different static location.
 
 const E01 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
 const E02 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
@@ -36,111 +35,104 @@ fn MakeHandler(comptime id: u64) type {
     };
 }
 
-const H01 = MakeHandler(1);
-const H02 = MakeHandler(2);
-const H03 = MakeHandler(3);
-const H04 = MakeHandler(4);
-const H05 = MakeHandler(5);
-const H06 = MakeHandler(6);
-const H07 = MakeHandler(7);
-const H08 = MakeHandler(8);
-const H09 = MakeHandler(9);
-const H10 = MakeHandler(10);
-const H11 = MakeHandler(11);
-const H12 = MakeHandler(12);
-const H13 = MakeHandler(13);
-const H14 = MakeHandler(14);
-const H15 = MakeHandler(15);
-const H16 = MakeHandler(16);
+const H01 = MakeHandler(1);  const H02 = MakeHandler(2);
+const H03 = MakeHandler(3);  const H04 = MakeHandler(4);
+const H05 = MakeHandler(5);  const H06 = MakeHandler(6);
+const H07 = MakeHandler(7);  const H08 = MakeHandler(8);
+const H09 = MakeHandler(9);  const H10 = MakeHandler(10);
+const H11 = MakeHandler(11); const H12 = MakeHandler(12);
+const H13 = MakeHandler(13); const H14 = MakeHandler(14);
+const H15 = MakeHandler(15); const H16 = MakeHandler(16);
 
 // ── Benchmarks ──────────────────────────────────────────────────────
 
-var io: std.Io = undefined;
+var bench_io: std.Io = undefined;
+var sc: *const fx.Scope = undefined;
 
 const ITERS: u64 = 50_000_000;
 
 fn benchSingle() void {
-    const start = std.Io.Timestamp.now(io, .awake);
+    const start = std.Io.Timestamp.now(bench_io, .awake);
     var sink: u64 = 0;
     var i: u64 = 0;
     while (i < ITERS) : (i += 1) {
-        sink +%= E01.exec(.op, i);
+        sink +%= E01.exec(sc, .op, i);
     }
-    const elapsed: u64 = @intCast(start.untilNow(io, .awake).nanoseconds);
+    const elapsed: u64 = @intCast(start.untilNow(bench_io, .awake).nanoseconds);
     std.mem.doNotOptimizeAway(sink);
     printResult("1 effect (hot cache)", elapsed, ITERS);
 }
 
 fn benchTwo() void {
-    const start = std.Io.Timestamp.now(io, .awake);
+    const start = std.Io.Timestamp.now(bench_io, .awake);
     var sink: u64 = 0;
     var i: u64 = 0;
     while (i < ITERS) : (i += 1) {
-        sink +%= E01.exec(.op, i);
-        sink +%= E02.exec(.op, i);
+        sink +%= E01.exec(sc, .op, i);
+        sink +%= E02.exec(sc, .op, i);
     }
-    const elapsed: u64 = @intCast(start.untilNow(io, .awake).nanoseconds);
+    const elapsed: u64 = @intCast(start.untilNow(bench_io, .awake).nanoseconds);
     std.mem.doNotOptimizeAway(sink);
     printResult("2 effects alternating", elapsed, ITERS * 2);
 }
 
 fn benchFour() void {
-    const start = std.Io.Timestamp.now(io, .awake);
+    const start = std.Io.Timestamp.now(bench_io, .awake);
     var sink: u64 = 0;
     var i: u64 = 0;
     while (i < ITERS) : (i += 1) {
-        sink +%= E01.exec(.op, i);
-        sink +%= E02.exec(.op, i);
-        sink +%= E03.exec(.op, i);
-        sink +%= E04.exec(.op, i);
+        sink +%= E01.exec(sc, .op, i);
+        sink +%= E02.exec(sc, .op, i);
+        sink +%= E03.exec(sc, .op, i);
+        sink +%= E04.exec(sc, .op, i);
     }
-    const elapsed: u64 = @intCast(start.untilNow(io, .awake).nanoseconds);
+    const elapsed: u64 = @intCast(start.untilNow(bench_io, .awake).nanoseconds);
     std.mem.doNotOptimizeAway(sink);
     printResult("4 effects alternating", elapsed, ITERS * 4);
 }
 
 fn benchEight() void {
-    const start = std.Io.Timestamp.now(io, .awake);
+    const start = std.Io.Timestamp.now(bench_io, .awake);
     var sink: u64 = 0;
     var i: u64 = 0;
     while (i < ITERS) : (i += 1) {
-        sink +%= E01.exec(.op, i);
-        sink +%= E02.exec(.op, i);
-        sink +%= E03.exec(.op, i);
-        sink +%= E04.exec(.op, i);
-        sink +%= E05.exec(.op, i);
-        sink +%= E06.exec(.op, i);
-        sink +%= E07.exec(.op, i);
-        sink +%= E08.exec(.op, i);
+        sink +%= E01.exec(sc, .op, i);
+        sink +%= E02.exec(sc, .op, i);
+        sink +%= E03.exec(sc, .op, i);
+        sink +%= E04.exec(sc, .op, i);
+        sink +%= E05.exec(sc, .op, i);
+        sink +%= E06.exec(sc, .op, i);
+        sink +%= E07.exec(sc, .op, i);
+        sink +%= E08.exec(sc, .op, i);
     }
-    const elapsed: u64 = @intCast(start.untilNow(io, .awake).nanoseconds);
+    const elapsed: u64 = @intCast(start.untilNow(bench_io, .awake).nanoseconds);
     std.mem.doNotOptimizeAway(sink);
     printResult("8 effects alternating", elapsed, ITERS * 8);
 }
 
 fn benchSixteen() void {
-    const start = std.Io.Timestamp.now(io, .awake);
+    const start = std.Io.Timestamp.now(bench_io, .awake);
     var sink: u64 = 0;
     var i: u64 = 0;
     while (i < ITERS) : (i += 1) {
-        sink +%= E01.exec(.op, i);
-        sink +%= E02.exec(.op, i);
-        sink +%= E03.exec(.op, i);
-        sink +%= E04.exec(.op, i);
-        sink +%= E05.exec(.op, i);
-        sink +%= E06.exec(.op, i);
-        sink +%= E07.exec(.op, i);
-        sink +%= E08.exec(.op, i);
-        sink +%= E09.exec(.op, i);
-        sink +%= E10.exec(.op, i);
-        sink +%= E11.exec(.op, i);
-        sink +%= E12.exec(.op, i);
-        sink +%= E13.exec(.op, i);
-        sink +%= E14.exec(.op, i);
-        sink +%= E15.exec(.op, i);
-        sink +%= E16.exec(.op, i);
+        sink +%= E01.exec(sc, .op, i);
+        sink +%= E02.exec(sc, .op, i);
+        sink +%= E03.exec(sc, .op, i);
+        sink +%= E04.exec(sc, .op, i);
+        sink +%= E05.exec(sc, .op, i);
+        sink +%= E06.exec(sc, .op, i);
+        sink +%= E07.exec(sc, .op, i);
+        sink +%= E08.exec(sc, .op, i);
+        sink +%= E09.exec(sc, .op, i);
+        sink +%= E10.exec(sc, .op, i);
+        sink +%= E11.exec(sc, .op, i);
+        sink +%= E12.exec(sc, .op, i);
+        sink +%= E13.exec(sc, .op, i);
+        sink +%= E14.exec(sc, .op, i);
+        sink +%= E15.exec(sc, .op, i);
+        sink +%= E16.exec(sc, .op, i);
     }
-    const elapsed: u64 = @intCast(start.untilNow(io, .awake).nanoseconds);
+    const elapsed: u64 = @intCast(start.untilNow(bench_io, .awake).nanoseconds);
     std.mem.doNotOptimizeAway(sink);
     printResult("16 effects alternating", elapsed, ITERS * 16);
 }
@@ -152,31 +144,20 @@ fn printResult(name: []const u8, elapsed_ns: u64, total_ops: u64) void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    io = init.io;
+    bench_io = init.io;
 
-    var h01 = H01{};
-    var h02 = H02{};
-    var h03 = H03{};
-    var h04 = H04{};
-    var h05 = H05{};
-    var h06 = H06{};
-    var h07 = H07{};
-    var h08 = H08{};
-    var h09 = H09{};
-    var h10 = H10{};
-    var h11 = H11{};
-    var h12 = H12{};
-    var h13 = H13{};
-    var h14 = H14{};
-    var h15 = H15{};
-    var h16 = H16{};
+    var h01 = H01{}; var h02 = H02{}; var h03 = H03{}; var h04 = H04{};
+    var h05 = H05{}; var h06 = H06{}; var h07 = H07{}; var h08 = H08{};
+    var h09 = H09{}; var h10 = H10{}; var h11 = H11{}; var h12 = H12{};
+    var h13 = H13{}; var h14 = H14{}; var h15 = H15{}; var h16 = H16{};
 
-    fx.init(.{
+    const scope = fx.Scope.init(.{
         .{ E01, &h01 }, .{ E02, &h02 }, .{ E03, &h03 }, .{ E04, &h04 },
         .{ E05, &h05 }, .{ E06, &h06 }, .{ E07, &h07 }, .{ E08, &h08 },
         .{ E09, &h09 }, .{ E10, &h10 }, .{ E11, &h11 }, .{ E12, &h12 },
         .{ E13, &h13 }, .{ E14, &h14 }, .{ E15, &h15 }, .{ E16, &h16 },
     });
+    sc = &scope;
 
     std.debug.print("\nCache pressure benchmark ({d}M iterations per effect)\n\n", .{ITERS / 1_000_000});
 

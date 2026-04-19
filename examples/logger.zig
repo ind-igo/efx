@@ -12,7 +12,6 @@ pub const Logger = fx.Effect(union(enum) {
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
-/// Writes human-readable lines to stderr.
 pub const StderrHandler = struct {
     pub fn info(_: *StderrHandler, msg: []const u8) void {
         std.debug.print("[INFO] {s}\n", .{msg});
@@ -27,7 +26,6 @@ pub const StderrHandler = struct {
     }
 };
 
-/// Writes JSON lines to stderr.
 pub const JsonHandler = struct {
     pub fn info(_: *JsonHandler, msg: []const u8) void {
         std.debug.print("{{\"level\":\"info\",\"msg\":\"{s}\"}}\n", .{msg});
@@ -42,7 +40,6 @@ pub const JsonHandler = struct {
     }
 };
 
-/// Collects messages in-memory for test assertions.
 pub const TestHandler = struct {
     buf: [64][]const u8 = undefined,
     len: usize = 0,
@@ -54,17 +51,9 @@ pub const TestHandler = struct {
         }
     }
 
-    pub fn info(self: *TestHandler, msg: []const u8) void {
-        self.push(msg);
-    }
-
-    pub fn warn(self: *TestHandler, msg: []const u8) void {
-        self.push(msg);
-    }
-
-    pub fn err(self: *TestHandler, msg: []const u8) void {
-        self.push(msg);
-    }
+    pub fn info(self: *TestHandler, msg: []const u8) void { self.push(msg); }
+    pub fn warn(self: *TestHandler, msg: []const u8) void { self.push(msg); }
+    pub fn err(self: *TestHandler, msg: []const u8) void { self.push(msg); }
 
     pub fn slice(self: *const TestHandler) []const []const u8 {
         return self.buf[0..self.len];
@@ -73,34 +62,32 @@ pub const TestHandler = struct {
 
 // ── Business logic that uses the effect ──────────────────────────────
 
-fn processOrder(order_id: []const u8) void {
-    Logger.exec(.info, order_id);
-    Logger.exec(.info, "order complete");
+fn processOrder(sc: *const fx.Scope, order_id: []const u8) void {
+    Logger.exec(sc, .info, order_id);
+    Logger.exec(sc, .info, "order complete");
 }
 
 // ── Main: stderr handler, then scoped swap to JSON ───────────────────
 
 pub fn main(_: std.process.Init) !void {
     var handler = StderrHandler{};
-    fx.init(.{.{ Logger, &handler }});
+    const sc = fx.Scope.init(.{.{ Logger, &handler }});
 
-    processOrder("order_42");
+    processOrder(&sc, "order_42");
 
-    // Scoped swap to JSON
     var json = JsonHandler{};
-    const token = fx.set(Logger, &json);
-    defer fx.reset(token);
+    const sc2 = sc.bind(Logger, &json);
 
-    processOrder("order_43");
+    processOrder(&sc2, "order_43");
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
 
 test "processOrder logs order id" {
     var handler = TestHandler{};
-    fx.init(.{.{ Logger, &handler }});
+    const sc = fx.Scope.init(.{.{ Logger, &handler }});
 
-    processOrder("order_99");
+    processOrder(&sc, "order_99");
 
     try std.testing.expectEqual(@as(usize, 2), handler.len);
     try std.testing.expectEqualStrings("order_99", handler.slice()[0]);

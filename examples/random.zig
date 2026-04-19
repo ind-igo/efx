@@ -14,7 +14,6 @@ pub const Random = fx.Effect(union(enum) {
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
-/// Backed by OS-provided entropy via `std.Io`.
 pub const SystemHandler = struct {
     io: std.Io,
 
@@ -39,7 +38,6 @@ pub const SystemHandler = struct {
     }
 };
 
-/// Seeded PRNG for deterministic testing.
 pub const SeededHandler = struct {
     rng: std.Random.DefaultPrng,
 
@@ -62,53 +60,53 @@ pub const SeededHandler = struct {
 
 // ── Business logic ───────────────────────────────────────────────────
 
-fn pick(comptime T: type, items: []const T) T {
-    const idx = Random.exec(.range, .{ .min = 0, .max = items.len - 1 });
+fn pick(sc: *const fx.Scope, comptime T: type, items: []const T) T {
+    const idx = Random.exec(sc, .range, .{ .min = 0, .max = items.len - 1 });
     return items[idx];
 }
 
-fn rollDice() u64 {
-    return Random.exec(.range, .{ .min = 1, .max = 6 });
+fn rollDice(sc: *const fx.Scope) u64 {
+    return Random.exec(sc, .range, .{ .min = 1, .max = 6 });
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
 
 pub fn main(init: std.process.Init) !void {
     var handler = SystemHandler{ .io = init.io };
-    fx.init(.{.{ Random, &handler }});
+    const sc = fx.Scope.init(.{.{ Random, &handler }});
 
     const colors = [_][]const u8{ "red", "blue", "green", "yellow" };
 
-    std.debug.print("random color: {s}\n", .{pick([]const u8, &colors)});
-    std.debug.print("dice roll: {d}\n", .{rollDice()});
-    std.debug.print("coin flip: {}\n", .{Random.exec(.boolean, {})});
+    std.debug.print("random color: {s}\n", .{pick(&sc, []const u8, &colors)});
+    std.debug.print("dice roll: {d}\n", .{rollDice(&sc)});
+    std.debug.print("coin flip: {}\n", .{Random.exec(&sc, .boolean, {})});
 }
 
 // ── Tests: reproducible with seeded handler ──────────────────────────
 
 test "seeded random is deterministic" {
     var rng1 = SeededHandler.init(42);
-    fx.init(.{.{ Random, &rng1 }});
+    const sc1 = fx.Scope.init(.{.{ Random, &rng1 }});
 
-    const a = Random.exec(.int_u64, {});
-    const b = Random.exec(.int_u64, {});
+    const a = Random.exec(&sc1, .int_u64, {});
+    const b = Random.exec(&sc1, .int_u64, {});
 
     var rng2 = SeededHandler.init(42);
-    fx.init(.{.{ Random, &rng2 }});
+    const sc2 = fx.Scope.init(.{.{ Random, &rng2 }});
 
-    try std.testing.expectEqual(a, Random.exec(.int_u64, {}));
-    try std.testing.expectEqual(b, Random.exec(.int_u64, {}));
+    try std.testing.expectEqual(a, Random.exec(&sc2, .int_u64, {}));
+    try std.testing.expectEqual(b, Random.exec(&sc2, .int_u64, {}));
 }
 
 test "pick is deterministic with seed" {
     var rng = SeededHandler.init(99);
-    fx.init(.{.{ Random, &rng }});
+    const sc = fx.Scope.init(.{.{ Random, &rng }});
 
     const colors = [_][]const u8{ "red", "blue", "green", "yellow" };
-    const first = pick([]const u8, &colors);
+    const first = pick(&sc, []const u8, &colors);
 
     var rng2 = SeededHandler.init(99);
-    fx.init(.{.{ Random, &rng2 }});
+    const sc2 = fx.Scope.init(.{.{ Random, &rng2 }});
 
-    try std.testing.expectEqualStrings(first, pick([]const u8, &colors));
+    try std.testing.expectEqualStrings(first, pick(&sc2, []const u8, &colors));
 }

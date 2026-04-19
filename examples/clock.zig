@@ -11,7 +11,6 @@ pub const Clock = fx.Effect(union(enum) {
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
-/// Real wall clock. In 0.16 time and sleep go through `std.Io`.
 pub const SystemHandler = struct {
     io: std.Io,
 
@@ -25,7 +24,6 @@ pub const SystemHandler = struct {
     }
 };
 
-/// Virtual clock for deterministic testing. Time only advances via sleep.
 pub const VirtualHandler = struct {
     now_ms: i64 = 0,
 
@@ -40,14 +38,14 @@ pub const VirtualHandler = struct {
 
 // ── Business logic ───────────────────────────────────────────────────
 
-fn isExpired(issued_ms: i64, ttl_ms: i64) bool {
-    const now = Clock.exec(.timestamp_ms, {});
+fn isExpired(sc: *const fx.Scope, issued_ms: i64, ttl_ms: i64) bool {
+    const now = Clock.exec(sc, .timestamp_ms, {});
     return now - issued_ms >= ttl_ms;
 }
 
-fn waitUntil(deadline_ms: i64) void {
-    while (Clock.exec(.timestamp_ms, {}) < deadline_ms) {
-        Clock.exec(.sleep_ms, 100);
+fn waitUntil(sc: *const fx.Scope, deadline_ms: i64) void {
+    while (Clock.exec(sc, .timestamp_ms, {}) < deadline_ms) {
+        Clock.exec(sc, .sleep_ms, 100);
     }
 }
 
@@ -55,29 +53,29 @@ fn waitUntil(deadline_ms: i64) void {
 
 pub fn main(init: std.process.Init) !void {
     var handler = SystemHandler{ .io = init.io };
-    fx.init(.{.{ Clock, &handler }});
+    const sc = fx.Scope.init(.{.{ Clock, &handler }});
 
-    const now = Clock.exec(.timestamp_ms, {});
+    const now = Clock.exec(&sc, .timestamp_ms, {});
     std.debug.print("current time: {d}ms\n", .{now});
-    std.debug.print("expired (ttl=0): {}\n", .{isExpired(now, 0)});
-    std.debug.print("expired (ttl=9999999): {}\n", .{isExpired(now, 9999999)});
+    std.debug.print("expired (ttl=0): {}\n", .{isExpired(&sc, now, 0)});
+    std.debug.print("expired (ttl=9999999): {}\n", .{isExpired(&sc, now, 9999999)});
 }
 
 // ── Tests: deterministic with virtual clock ──────────────────────────
 
 test "isExpired with virtual clock" {
     var clock = VirtualHandler{ .now_ms = 1000 };
-    fx.init(.{.{ Clock, &clock }});
+    const sc = fx.Scope.init(.{.{ Clock, &clock }});
 
-    try std.testing.expect(isExpired(500, 400));
-    try std.testing.expect(!isExpired(500, 600));
+    try std.testing.expect(isExpired(&sc, 500, 400));
+    try std.testing.expect(!isExpired(&sc, 500, 600));
 }
 
 test "waitUntil advances virtual time" {
     var clock = VirtualHandler{ .now_ms = 0 };
-    fx.init(.{.{ Clock, &clock }});
+    const sc = fx.Scope.init(.{.{ Clock, &clock }});
 
-    waitUntil(500);
+    waitUntil(&sc, 500);
 
     try std.testing.expectEqual(@as(i64, 500), clock.now_ms);
 }

@@ -17,49 +17,49 @@ const Result = struct { processed: u32 = 0, failed: u32 = 0, skipped: u32 = 0 };
 
 // ── Pipeline stages ────────────────────────────────────────────────
 
-fn validate(rec: *const Record) bool {
+fn validate(sc: *const fx.Scope, rec: *const Record) bool {
     if (rec.email.len == 0) {
-        Logger.exec(.err, "missing email");
-        Metrics.exec(.inc, "validate.fail");
+        Logger.exec(sc, .err, "missing email");
+        Metrics.exec(sc, .inc, "validate.fail");
         return false;
     }
     for (rec.email) |c| {
         if (c == '@') {
-            Metrics.exec(.inc, "validate.pass");
+            Metrics.exec(sc, .inc, "validate.pass");
             return true;
         }
     }
-    Logger.exec(.err, "invalid email");
-    Metrics.exec(.inc, "validate.fail");
+    Logger.exec(sc, .err, "invalid email");
+    Metrics.exec(sc, .inc, "validate.fail");
     return false;
 }
 
-fn enrich(rec: *Record) void {
-    if (!FeatureFlags.exec(.enabled, "enrichment")) {
-        Logger.exec(.info, "enrichment skipped");
+fn enrich(sc: *const fx.Scope, rec: *Record) void {
+    if (!FeatureFlags.exec(sc, .enabled, "enrichment")) {
+        Logger.exec(sc, .info, "enrichment skipped");
         return;
     }
-    rec.enriched_at = Clock.exec(.now_ms, {});
-    Metrics.exec(.inc, "enrich.ok");
+    rec.enriched_at = Clock.exec(sc, .now_ms, {});
+    Metrics.exec(sc, .inc, "enrich.ok");
 }
 
-fn store(rec: *Record) void {
-    rec.stored_at = Clock.exec(.now_ms, {});
-    Logger.exec(.info, "stored");
-    Metrics.exec(.inc, "store.ok");
+fn store(sc: *const fx.Scope, rec: *Record) void {
+    rec.stored_at = Clock.exec(sc, .now_ms, {});
+    Logger.exec(sc, .info, "stored");
+    Metrics.exec(sc, .inc, "store.ok");
 }
 
-fn processBatch(records: []Record) Result {
+fn processBatch(sc: *const fx.Scope, records: []Record) Result {
     var r = Result{};
-    Logger.exec(.info, "batch start");
+    Logger.exec(sc, .info, "batch start");
     for (records) |*rec| {
-        if (!validate(rec)) { r.failed += 1; continue; }
-        enrich(rec);
-        if (rec.enriched_at == 0 and FeatureFlags.exec(.enabled, "enrichment")) { r.skipped += 1; continue; }
-        store(rec);
+        if (!validate(sc, rec)) { r.failed += 1; continue; }
+        enrich(sc, rec);
+        if (rec.enriched_at == 0 and FeatureFlags.exec(sc, .enabled, "enrichment")) { r.skipped += 1; continue; }
+        store(sc, rec);
         r.processed += 1;
     }
-    Logger.exec(.info, "batch end");
+    Logger.exec(sc, .info, "batch end");
     return r;
 }
 
@@ -108,6 +108,10 @@ const TestFlags = struct {
     pub fn enabled(self: *TestFlags, name: []const u8) bool { return std.mem.eql(u8, name, "enrichment") and self.enrichment_on; }
 };
 
+fn testScope(log: *TestLogger, met: *CounterMap, clk: *TestClock, flg: *TestFlags) fx.Scope {
+    return fx.Scope.init(.{ .{ Logger, log }, .{ Metrics, met }, .{ Clock, clk }, .{ FeatureFlags, flg } });
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 test "happy path: valid records are enriched and stored" {
@@ -115,13 +119,13 @@ test "happy path: valid records are enriched and stored" {
     var met = CounterMap{};
     var clk = TestClock{};
     var flg = TestFlags{};
-    fx.init(.{ .{ Logger, &log }, .{ Metrics, &met }, .{ Clock, &clk }, .{ FeatureFlags, &flg } });
+    const sc = testScope(&log, &met, &clk, &flg);
 
     var recs = [_]Record{
         .{ .id = "1", .email = "a@b.com", .payload = "d1" },
         .{ .id = "2", .email = "c@d.org", .payload = "d2" },
     };
-    const r = processBatch(&recs);
+    const r = processBatch(&sc, &recs);
 
     try std.testing.expectEqual(@as(u32, 2), r.processed);
     try std.testing.expectEqual(@as(u32, 0), r.failed);
@@ -138,14 +142,14 @@ test "invalid records are rejected and counted" {
     var met = CounterMap{};
     var clk = TestClock{};
     var flg = TestFlags{};
-    fx.init(.{ .{ Logger, &log }, .{ Metrics, &met }, .{ Clock, &clk }, .{ FeatureFlags, &flg } });
+    const sc = testScope(&log, &met, &clk, &flg);
 
     var recs = [_]Record{
         .{ .id = "x", .email = "", .payload = "a" },
         .{ .id = "y", .email = "no-at", .payload = "b" },
         .{ .id = "z", .email = "ok@ok", .payload = "c" },
     };
-    const r = processBatch(&recs);
+    const r = processBatch(&sc, &recs);
 
     try std.testing.expectEqual(@as(u32, 1), r.processed);
     try std.testing.expectEqual(@as(u32, 2), r.failed);
@@ -158,10 +162,10 @@ test "feature flag disables enrichment" {
     var met = CounterMap{};
     var clk = TestClock{};
     var flg = TestFlags{ .enrichment_on = false };
-    fx.init(.{ .{ Logger, &log }, .{ Metrics, &met }, .{ Clock, &clk }, .{ FeatureFlags, &flg } });
+    const sc = testScope(&log, &met, &clk, &flg);
 
     var recs = [_]Record{.{ .id = "1", .email = "a@b.com", .payload = "d" }};
-    const r = processBatch(&recs);
+    const r = processBatch(&sc, &recs);
 
     try std.testing.expectEqual(@as(u32, 1), r.processed);
     try std.testing.expectEqual(@as(i64, 0), recs[0].enriched_at);
@@ -175,30 +179,25 @@ test "scoped swap: silence logging for a batch section" {
     var met = CounterMap{};
     var clk = TestClock{};
     var flg = TestFlags{};
-    fx.init(.{ .{ Logger, &log }, .{ Metrics, &met }, .{ Clock, &clk }, .{ FeatureFlags, &flg } });
+    const sc = testScope(&log, &met, &clk, &flg);
 
-    // Normal batch — logger captures messages
     var r1 = [_]Record{.{ .id = "1", .email = "a@b.com", .payload = "d" }};
-    _ = processBatch(&r1);
+    _ = processBatch(&sc, &r1);
     const before = log.len;
     try std.testing.expect(before > 0);
 
-    // Swap to silent logger for a noisy section
     var silent = struct {
         pub fn info(_: *@This(), _: []const u8) void {}
         pub fn err(_: *@This(), _: []const u8) void {}
     }{};
-    const token = fx.set(Logger, &silent);
+    const quiet = sc.bind(Logger, &silent);
 
     var r2 = [_]Record{.{ .id = "2", .email = "x@y.com", .payload = "d" }};
-    _ = processBatch(&r2);
-    try std.testing.expectEqual(before, log.len); // no growth
-
-    // Restore — original logger active again
-    fx.reset(token);
+    _ = processBatch(&quiet, &r2);
+    try std.testing.expectEqual(before, log.len);
 
     var r3 = [_]Record{.{ .id = "3", .email = "z@w.com", .payload = "d" }};
-    _ = processBatch(&r3);
+    _ = processBatch(&sc, &r3);
     try std.testing.expect(log.len > before);
 }
 
@@ -225,7 +224,7 @@ pub fn main(init: std.process.Init) !void {
     var met = CounterMap{};
     var clk = WallClock{ .io = init.io };
     var flg = LiveFlags{};
-    fx.init(.{ .{ Logger, &log }, .{ Metrics, &met }, .{ Clock, &clk }, .{ FeatureFlags, &flg } });
+    const sc = fx.Scope.init(.{ .{ Logger, &log }, .{ Metrics, &met }, .{ Clock, &clk }, .{ FeatureFlags, &flg } });
 
     var records = [_]Record{
         .{ .id = "1", .email = "alice@example.com", .payload = "order_100" },
@@ -234,7 +233,7 @@ pub fn main(init: std.process.Init) !void {
         .{ .id = "4", .email = "bob@example.com", .payload = "order_103" },
     };
 
-    const r = processBatch(&records);
+    const r = processBatch(&sc, &records);
     std.debug.print("\nprocessed={d} failed={d} skipped={d}\n", .{ r.processed, r.failed, r.skipped });
     for (met.keys[0..met.len], met.vals[0..met.len]) |k, v|
         std.debug.print("  {s}: {d}\n", .{ k, v });

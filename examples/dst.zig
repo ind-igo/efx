@@ -60,7 +60,6 @@ pub const Simulator = struct {
         self.trace.append(self.allocator, .{ .time_ms = self.now_ms, .event = event }) catch {};
     }
 
-    /// Dump the trace to stderr. Call on test failure to see what happened.
     pub fn dump(self: *const Simulator) void {
         std.debug.print("── trace ({d} events) ──\n", .{self.trace.items.len});
         for (self.trace.items) |entry| {
@@ -76,8 +75,6 @@ pub const Simulator = struct {
         std.debug.print("── end trace ──\n", .{});
     }
 
-    // Clock handler
-
     pub fn timestamp_ms(self: *Simulator) i64 {
         self.record(.{ .timestamp_ms = self.now_ms });
         return self.now_ms;
@@ -87,8 +84,6 @@ pub const Simulator = struct {
         self.record(.{ .sleep_ms = ms });
         self.now_ms += @intCast(ms);
     }
-
-    // Random handler
 
     pub fn int_u64(self: *Simulator) u64 {
         const v = self.rng.random().int(u64);
@@ -117,27 +112,24 @@ pub const RetryResult = struct {
     elapsed_ms: i64,
 };
 
-/// Retry an unreliable operation up to `max_attempts` times.
-/// On failure, sleep for `base_delay_ms + random_jitter` before retrying.
-/// The "operation" succeeds when random.boolean returns true.
-fn retryWithJitter(max_attempts: u32, base_delay_ms: u64) RetryResult {
-    const start = Clock.exec(.timestamp_ms, {});
+fn retryWithJitter(sc: *const fx.Scope, max_attempts: u32, base_delay_ms: u64) RetryResult {
+    const start = Clock.exec(sc, .timestamp_ms, {});
     var attempt: u32 = 0;
     while (attempt < max_attempts) : (attempt += 1) {
-        if (Random.exec(.boolean, {})) {
+        if (Random.exec(sc, .boolean, {})) {
             return .{
                 .succeeded = true,
                 .attempts = attempt + 1,
-                .elapsed_ms = Clock.exec(.timestamp_ms, {}) - start,
+                .elapsed_ms = Clock.exec(sc, .timestamp_ms, {}) - start,
             };
         }
-        const jitter = Random.exec(.range, .{ .min = 0, .max = base_delay_ms });
-        Clock.exec(.sleep_ms, base_delay_ms + jitter);
+        const jitter = Random.exec(sc, .range, .{ .min = 0, .max = base_delay_ms });
+        Clock.exec(sc, .sleep_ms, base_delay_ms + jitter);
     }
     return .{
         .succeeded = false,
         .attempts = max_attempts,
-        .elapsed_ms = Clock.exec(.timestamp_ms, {}) - start,
+        .elapsed_ms = Clock.exec(sc, .timestamp_ms, {}) - start,
     };
 }
 
@@ -145,11 +137,11 @@ fn retryWithJitter(max_attempts: u32, base_delay_ms: u64) RetryResult {
 
 fn runSim(seed: u64, allocator: std.mem.Allocator) struct { result: RetryResult, sim: Simulator } {
     var sim = Simulator.init(seed, allocator);
-    fx.init(.{
+    const sc = fx.Scope.init(.{
         .{ Clock, &sim },
         .{ Random, &sim },
     });
-    const result = retryWithJitter(5, 200);
+    const result = retryWithJitter(&sc, 5, 200);
     return .{ .result = result, .sim = sim };
 }
 
@@ -164,8 +156,6 @@ test "same seed → identical results" {
     try std.testing.expectEqual(run1.result.succeeded, run2.result.succeeded);
     try std.testing.expectEqual(run1.result.attempts, run2.result.attempts);
     try std.testing.expectEqual(run1.result.elapsed_ms, run2.result.elapsed_ms);
-
-    // Event traces are identical
     try std.testing.expectEqual(run1.sim.trace.items.len, run2.sim.trace.items.len);
 }
 
@@ -175,8 +165,6 @@ test "different seeds diverge" {
     var run2 = runSim(123, std.testing.allocator);
     defer run2.sim.deinit();
 
-    // With different seeds, at least one observable differs.
-    // (Attempts, timing, or both.)
     const diverged = run1.result.attempts != run2.result.attempts or
         run1.result.elapsed_ms != run2.result.elapsed_ms;
     try std.testing.expect(diverged);
@@ -185,70 +173,50 @@ test "different seeds diverge" {
 test "trace captures every effect call" {
     var run = runSim(42, std.testing.allocator);
     defer run.sim.deinit();
-
-    // Every event in the trace must be one of our known effect operations
     try std.testing.expect(run.sim.trace.items.len > 0);
-
-    // On failure, dump the trace to see what happened:
-    // run.sim.dump();
 }
 
 test "fault injection: always-fail operation exhausts retries" {
-    // Use the AlwaysFail handler: boolean always returns false.
     var sim = Simulator.init(0, std.testing.allocator);
     defer sim.deinit();
     var fail_rng = AlwaysFailRandom{};
 
-    fx.init(.{
+    const sc = fx.Scope.init(.{
         .{ Clock, &sim },
         .{ Random, &fail_rng },
     });
 
-    const result = retryWithJitter(3, 100);
+    const result = retryWithJitter(&sc, 3, 100);
 
     try std.testing.expect(!result.succeeded);
     try std.testing.expectEqual(@as(u32, 3), result.attempts);
-    // 3 retries × (100 base + 0 jitter) = 300ms
     try std.testing.expectEqual(@as(i64, 300), result.elapsed_ms);
 }
 
-/// Fault-injecting handler: boolean always false, range always returns min.
 const AlwaysFailRandom = struct {
-    pub fn int_u64(_: *AlwaysFailRandom) u64 {
-        return 0;
-    }
-
-    pub fn range(_: *AlwaysFailRandom, r: Range) u64 {
-        return r.min;
-    }
-
-    pub fn boolean(_: *AlwaysFailRandom) bool {
-        return false;
-    }
+    pub fn int_u64(_: *AlwaysFailRandom) u64 { return 0; }
+    pub fn range(_: *AlwaysFailRandom, r: Range) u64 { return r.min; }
+    pub fn boolean(_: *AlwaysFailRandom) bool { return false; }
 };
 
 // ── Main: run a few seeds, print results ────────────────────────────
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
-
     const seeds = [_]u64{ 42, 123, 999, 7, 31415 };
 
     for (seeds) |seed| {
         var sim = Simulator.init(seed, allocator);
         defer sim.deinit();
 
-        fx.init(.{
+        const sc = fx.Scope.init(.{
             .{ Clock, &sim },
             .{ Random, &sim },
         });
 
-        const result = retryWithJitter(5, 200);
+        const result = retryWithJitter(&sc, 5, 200);
         std.debug.print("seed={d:<6} succeeded={} attempts={d} elapsed={d}ms\n", .{
-            seed,
-            result.succeeded,
-            result.attempts,
-            result.elapsed_ms,
+            seed, result.succeeded, result.attempts, result.elapsed_ms,
         });
         sim.dump();
     }

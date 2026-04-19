@@ -49,19 +49,18 @@ noinline fn directIncNoInline(v: u64) void {
 const ITERS: u64 = 100_000_000;
 const WARMUP: u64 = 10_000_000;
 
-var io: std.Io = undefined;
+var bench_io: std.Io = undefined;
+var bench_scope: *const fx.Scope = undefined;
 
 fn elapsedNs(start: std.Io.Timestamp) u64 {
-    return @intCast(start.untilNow(io, .awake).nanoseconds);
+    return @intCast(start.untilNow(bench_io, .awake).nanoseconds);
 }
 
 fn bench(comptime name: []const u8, comptime f: fn (u64) void) void {
-    // Warmup
     var i: u64 = 0;
     while (i < WARMUP) : (i += 1) f(i);
 
-    // Timed
-    const start = std.Io.Timestamp.now(io, .awake);
+    const start = std.Io.Timestamp.now(bench_io, .awake);
     i = 0;
     while (i < ITERS) : (i += 1) f(i);
     const elapsed_ns = elapsedNs(start);
@@ -78,7 +77,7 @@ fn benchReturn(comptime name: []const u8, comptime f: fn (u64) u64) void {
     var i: u64 = 0;
     while (i < WARMUP) : (i += 1) _ = f(i);
 
-    const start = std.Io.Timestamp.now(io, .awake);
+    const start = std.Io.Timestamp.now(bench_io, .awake);
     var sink: u64 = 0;
     i = 0;
     while (i < ITERS) : (i += 1) sink +%= f(i);
@@ -96,7 +95,7 @@ fn benchReturn(comptime name: []const u8, comptime f: fn (u64) u64) void {
 // ── Wrappers ────────────────────────────────────────────────────────
 
 fn viaEffect(v: u64) void {
-    Counter.exec(.inc, v);
+    Counter.exec(bench_scope, .inc, v);
 }
 
 fn viaDirect(v: u64) void {
@@ -110,19 +109,19 @@ fn viaFnPtr(v: u64) void {
 }
 
 fn viaEffectReturn(v: u64) u64 {
-    return Adder.exec(.add, v);
+    return Adder.exec(bench_scope, .add, v);
 }
 
 pub fn main(init: std.process.Init) !void {
-    io = init.io;
+    bench_io = init.io;
 
-    // Setup
     var counter = CounterHandler{};
     var adder = AdderHandler{};
-    fx.init(.{
+    const sc = fx.Scope.init(.{
         .{ Counter, &counter },
         .{ Adder, &adder },
     });
+    bench_scope = &sc;
 
     std.debug.print("\nDispatch benchmark ({d}M iterations)\n\n", .{ITERS / 1_000_000});
 
@@ -134,7 +133,6 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("\nReturning operations:\n", .{});
     benchReturn("effect dispatch (returns u64)", viaEffectReturn);
 
-    // Prevent optimization of handler state
     std.mem.doNotOptimizeAway(counter.total);
     std.mem.doNotOptimizeAway(adder.acc);
     std.mem.doNotOptimizeAway(direct_total);
