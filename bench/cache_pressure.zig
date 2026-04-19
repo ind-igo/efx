@@ -55,35 +55,38 @@ const H16 = MakeHandler(16);
 
 // ── Benchmarks ──────────────────────────────────────────────────────
 
+var io_instance: std.Io.Threaded = .init_single_threaded;
+var io: std.Io = undefined;
+
 const ITERS: u64 = 50_000_000;
 
 fn benchSingle() void {
-    var timer = std.time.Timer.start() catch unreachable;
+    const start = std.Io.Timestamp.now(io, .awake);
     var sink: u64 = 0;
     var i: u64 = 0;
     while (i < ITERS) : (i += 1) {
         sink +%= E01.exec(.op, i);
     }
-    const elapsed = timer.read();
+    const elapsed: u64 = @intCast(start.untilNow(io, .awake).nanoseconds);
     std.mem.doNotOptimizeAway(sink);
     printResult("1 effect (hot cache)", elapsed, ITERS);
 }
 
 fn benchTwo() void {
-    var timer = std.time.Timer.start() catch unreachable;
+    const start = std.Io.Timestamp.now(io, .awake);
     var sink: u64 = 0;
     var i: u64 = 0;
     while (i < ITERS) : (i += 1) {
         sink +%= E01.exec(.op, i);
         sink +%= E02.exec(.op, i);
     }
-    const elapsed = timer.read();
+    const elapsed: u64 = @intCast(start.untilNow(io, .awake).nanoseconds);
     std.mem.doNotOptimizeAway(sink);
     printResult("2 effects alternating", elapsed, ITERS * 2);
 }
 
 fn benchFour() void {
-    var timer = std.time.Timer.start() catch unreachable;
+    const start = std.Io.Timestamp.now(io, .awake);
     var sink: u64 = 0;
     var i: u64 = 0;
     while (i < ITERS) : (i += 1) {
@@ -92,13 +95,13 @@ fn benchFour() void {
         sink +%= E03.exec(.op, i);
         sink +%= E04.exec(.op, i);
     }
-    const elapsed = timer.read();
+    const elapsed: u64 = @intCast(start.untilNow(io, .awake).nanoseconds);
     std.mem.doNotOptimizeAway(sink);
     printResult("4 effects alternating", elapsed, ITERS * 4);
 }
 
 fn benchEight() void {
-    var timer = std.time.Timer.start() catch unreachable;
+    const start = std.Io.Timestamp.now(io, .awake);
     var sink: u64 = 0;
     var i: u64 = 0;
     while (i < ITERS) : (i += 1) {
@@ -111,13 +114,13 @@ fn benchEight() void {
         sink +%= E07.exec(.op, i);
         sink +%= E08.exec(.op, i);
     }
-    const elapsed = timer.read();
+    const elapsed: u64 = @intCast(start.untilNow(io, .awake).nanoseconds);
     std.mem.doNotOptimizeAway(sink);
     printResult("8 effects alternating", elapsed, ITERS * 8);
 }
 
 fn benchSixteen() void {
-    var timer = std.time.Timer.start() catch unreachable;
+    const start = std.Io.Timestamp.now(io, .awake);
     var sink: u64 = 0;
     var i: u64 = 0;
     while (i < ITERS) : (i += 1) {
@@ -138,7 +141,7 @@ fn benchSixteen() void {
         sink +%= E15.exec(.op, i);
         sink +%= E16.exec(.op, i);
     }
-    const elapsed = timer.read();
+    const elapsed: u64 = @intCast(start.untilNow(io, .awake).nanoseconds);
     std.mem.doNotOptimizeAway(sink);
     printResult("16 effects alternating", elapsed, ITERS * 16);
 }
@@ -150,6 +153,8 @@ fn printResult(name: []const u8, elapsed_ns: u64, total_ops: u64) void {
 }
 
 pub fn main() !void {
+    io = io_instance.io();
+
     var h01 = H01{};
     var h02 = H02{};
     var h03 = H03{};

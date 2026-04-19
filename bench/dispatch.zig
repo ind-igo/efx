@@ -49,16 +49,23 @@ noinline fn directIncNoInline(v: u64) void {
 const ITERS: u64 = 100_000_000;
 const WARMUP: u64 = 10_000_000;
 
+var io_instance: std.Io.Threaded = .init_single_threaded;
+var io: std.Io = undefined;
+
+fn elapsedNs(start: std.Io.Timestamp) u64 {
+    return @intCast(start.untilNow(io, .awake).nanoseconds);
+}
+
 fn bench(comptime name: []const u8, comptime f: fn (u64) void) void {
     // Warmup
     var i: u64 = 0;
     while (i < WARMUP) : (i += 1) f(i);
 
     // Timed
-    var timer = std.time.Timer.start() catch unreachable;
+    const start = std.Io.Timestamp.now(io, .awake);
     i = 0;
     while (i < ITERS) : (i += 1) f(i);
-    const elapsed_ns = timer.read();
+    const elapsed_ns = elapsedNs(start);
 
     const ns_per_op = @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(ITERS));
     std.debug.print("  {s:<30} {d:.2} ns/op  ({d:.0}M ops/sec)\n", .{
@@ -72,11 +79,11 @@ fn benchReturn(comptime name: []const u8, comptime f: fn (u64) u64) void {
     var i: u64 = 0;
     while (i < WARMUP) : (i += 1) _ = f(i);
 
-    var timer = std.time.Timer.start() catch unreachable;
+    const start = std.Io.Timestamp.now(io, .awake);
     var sink: u64 = 0;
     i = 0;
     while (i < ITERS) : (i += 1) sink +%= f(i);
-    const elapsed_ns = timer.read();
+    const elapsed_ns = elapsedNs(start);
     std.mem.doNotOptimizeAway(sink);
 
     const ns_per_op = @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(ITERS));
@@ -108,6 +115,8 @@ fn viaEffectReturn(v: u64) u64 {
 }
 
 pub fn main() !void {
+    io = io_instance.io();
+
     // Setup
     var counter = CounterHandler{};
     var adder = AdderHandler{};

@@ -210,7 +210,10 @@ const StderrLogger = struct {
 };
 
 const WallClock = struct {
-    pub fn now_ms(_: *WallClock) i64 { return std.time.milliTimestamp(); }
+    io: std.Io,
+    pub fn now_ms(self: *WallClock) i64 {
+        return std.Io.Clock.Timestamp.now(self.io, .real).raw.toMilliseconds();
+    }
 };
 
 const LiveFlags = struct {
@@ -218,9 +221,10 @@ const LiveFlags = struct {
 };
 
 pub fn main() !void {
+    var io_instance: std.Io.Threaded = .init_single_threaded;
     var log = StderrLogger{};
     var met = CounterMap{};
-    var clk = WallClock{};
+    var clk = WallClock{ .io = io_instance.io() };
     var flg = LiveFlags{};
     fx.init(.{ .{ Logger, &log }, .{ Metrics, &met }, .{ Clock, &clk }, .{ FeatureFlags, &flg } });
 

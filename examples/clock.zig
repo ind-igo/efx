@@ -11,14 +11,17 @@ pub const Clock = fx.Effect(union(enum) {
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
-/// Real wall clock.
+/// Real wall clock. In 0.16 time and sleep go through `std.Io`.
 pub const SystemHandler = struct {
-    pub fn timestamp_ms(_: *SystemHandler) i64 {
-        return @divTrunc(std.time.milliTimestamp(), 1);
+    io: std.Io,
+
+    pub fn timestamp_ms(self: *SystemHandler) i64 {
+        return std.Io.Clock.Timestamp.now(self.io, .real).raw.toMilliseconds();
     }
 
-    pub fn sleep_ms(_: *SystemHandler, ms: u64) void {
-        std.Thread.sleep(ms * std.time.ns_per_ms);
+    pub fn sleep_ms(self: *SystemHandler, ms: u64) void {
+        const duration: std.Io.Duration = .fromMilliseconds(@intCast(ms));
+        self.io.sleep(duration, .awake) catch {};
     }
 };
 
@@ -51,7 +54,8 @@ fn waitUntil(deadline_ms: i64) void {
 // ── Main ─────────────────────────────────────────────────────────────
 
 pub fn main() !void {
-    var handler = SystemHandler{};
+    var io_instance: std.Io.Threaded = .init_single_threaded;
+    var handler = SystemHandler{ .io = io_instance.io() };
     fx.init(.{.{ Clock, &handler }});
 
     const now = Clock.exec(.timestamp_ms, {});

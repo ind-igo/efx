@@ -59,26 +59,16 @@ pub fn Effect(comptime U: type) type {
 
     // Vtable: a struct with one typed trampoline function pointer per operation.
     const Vtable = comptime blk: {
-        var vtable_fields: [fields.len]std.builtin.Type.StructField = undefined;
+        var field_names: [fields.len][:0]const u8 = undefined;
+        var field_types: [fields.len]type = undefined;
         for (fields, 0..) |field, i| {
             const OpType = field.type;
             if (!isOpType(OpType))
                 @compileError("Effect union variant '" ++ field.name ++ "' must have an Op(...) payload");
-            const FnPtr = *const fn (*anyopaque, OpType.ArgType) OpType.ResultType;
-            vtable_fields[i] = .{
-                .name = field.name,
-                .type = FnPtr,
-                .default_value_ptr = null,
-                .is_comptime = false,
-                .alignment = @alignOf(FnPtr),
-            };
+            field_names[i] = field.name;
+            field_types[i] = *const fn (*anyopaque, OpType.ArgType) OpType.ResultType;
         }
-        break :blk @Type(.{ .@"struct" = .{
-            .layout = .auto,
-            .fields = &vtable_fields,
-            .decls = &.{},
-            .is_tuple = false,
-        } });
+        break :blk @Struct(.auto, null, &field_names, &field_types, &@splat(.{}));
     };
 
     return struct {

@@ -14,18 +14,28 @@ pub const Random = fx.Effect(union(enum) {
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
-/// Backed by OS cryptographic randomness.
+/// Backed by OS-provided entropy via `std.Io`.
 pub const SystemHandler = struct {
-    pub fn int_u64(_: *SystemHandler) u64 {
-        return std.crypto.random.int(u64);
+    io: std.Io,
+
+    fn fill(self: *SystemHandler, buf: []u8) void {
+        self.io.random(buf);
     }
 
-    pub fn range(_: *SystemHandler, r: Range) u64 {
-        return std.crypto.random.intRangeAtMost(u64, r.min, r.max);
+    fn random(self: *SystemHandler) std.Random {
+        return .init(self, fill);
     }
 
-    pub fn boolean(_: *SystemHandler) bool {
-        return std.crypto.random.boolean();
+    pub fn int_u64(self: *SystemHandler) u64 {
+        return self.random().int(u64);
+    }
+
+    pub fn range(self: *SystemHandler, r: Range) u64 {
+        return self.random().intRangeAtMost(u64, r.min, r.max);
+    }
+
+    pub fn boolean(self: *SystemHandler) bool {
+        return self.random().boolean();
     }
 };
 
@@ -64,7 +74,8 @@ fn rollDice() u64 {
 // ── Main ─────────────────────────────────────────────────────────────
 
 pub fn main() !void {
-    var handler = SystemHandler{};
+    var io_instance: std.Io.Threaded = .init_single_threaded;
+    var handler = SystemHandler{ .io = io_instance.io() };
     fx.init(.{.{ Random, &handler }});
 
     const colors = [_][]const u8{ "red", "blue", "green", "yellow" };
