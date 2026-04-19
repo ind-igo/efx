@@ -80,7 +80,7 @@ fn processOrder(order_id: []const u8) void {
 
 // ── Main: stderr handler, then scoped swap to JSON ───────────────────
 
-pub fn main() !void {
+pub fn main(_: std.process.Init) !void {
     var handler = StderrHandler{};
     fx.init(.{.{ Logger, &handler }});
 

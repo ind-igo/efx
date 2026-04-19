@@ -55,7 +55,6 @@ const H16 = MakeHandler(16);
 
 // ── Benchmarks ──────────────────────────────────────────────────────
 
-var io_instance: std.Io.Threaded = .init_single_threaded;
 var io: std.Io = undefined;
 
 const ITERS: u64 = 50_000_000;
@@ -152,8 +151,8 @@ fn printResult(name: []const u8, elapsed_ns: u64, total_ops: u64) void {
     std.debug.print("  {s:<30} {d:.2} ns/op  ({d:.0}M ops/sec)\n", .{ name, ns_per_op, mops });
 }
 
-pub fn main() !void {
-    io = io_instance.io();
+pub fn main(init: std.process.Init) !void {
+    io = init.io;
 
     var h01 = H01{};
     var h02 = H02{};

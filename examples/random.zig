@@ -73,9 +73,8 @@ fn rollDice() u64 {
 
 // ── Main ─────────────────────────────────────────────────────────────
 
-pub fn main() !void {
-    var io_instance: std.Io.Threaded = .init_single_threaded;
-    var handler = SystemHandler{ .io = io_instance.io() };
+pub fn main(init: std.process.Init) !void {
+    var handler = SystemHandler{ .io = init.io };
     fx.init(.{.{ Random, &handler }});
 
     const colors = [_][]const u8{ "red", "blue", "green", "yellow" };

@@ -49,7 +49,6 @@ noinline fn directIncNoInline(v: u64) void {
 const ITERS: u64 = 100_000_000;
 const WARMUP: u64 = 10_000_000;
 
-var io_instance: std.Io.Threaded = .init_single_threaded;
 var io: std.Io = undefined;
 
 fn elapsedNs(start: std.Io.Timestamp) u64 {
@@ -114,8 +113,8 @@ fn viaEffectReturn(v: u64) u64 {
     return Adder.exec(.add, v);
 }
 
-pub fn main() !void {
-    io = io_instance.io();
+pub fn main(init: std.process.Init) !void {
+    io = init.io;
 
     // Setup
     var counter = CounterHandler{};

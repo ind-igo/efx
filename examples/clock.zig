@@ -53,9 +53,8 @@ fn waitUntil(deadline_ms: i64) void {
 
 // ── Main ─────────────────────────────────────────────────────────────
 
-pub fn main() !void {
-    var io_instance: std.Io.Threaded = .init_single_threaded;
-    var handler = SystemHandler{ .io = io_instance.io() };
+pub fn main(init: std.process.Init) !void {
+    var handler = SystemHandler{ .io = init.io };
     fx.init(.{.{ Clock, &handler }});
 
     const now = Clock.exec(.timestamp_ms, {});

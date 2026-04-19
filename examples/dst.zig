@@ -229,10 +229,8 @@ const AlwaysFailRandom = struct {
 
 // ── Main: run a few seeds, print results ────────────────────────────
 
-pub fn main() !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     const seeds = [_]u64{ 42, 123, 999, 7, 31415 };
 

@@ -220,11 +220,10 @@ const LiveFlags = struct {
     pub fn enabled(_: *LiveFlags, _: []const u8) bool { return true; }
 };
 
-pub fn main() !void {
-    var io_instance: std.Io.Threaded = .init_single_threaded;
+pub fn main(init: std.process.Init) !void {
     var log = StderrLogger{};
     var met = CounterMap{};
-    var clk = WallClock{ .io = io_instance.io() };
+    var clk = WallClock{ .io = init.io };
     var flg = LiveFlags{};
     fx.init(.{ .{ Logger, &log }, .{ Metrics, &met }, .{ Clock, &clk }, .{ FeatureFlags, &flg } });
 
