@@ -11,7 +11,7 @@ Effects are a compositional primitive that allows you to model any boundary wher
 - **Networking:** transport, DNS, cert store as effects. Test a protocol state machine with loopback buffers and a virtual clock. No sockets, no timing jitter.
 - **Concurrency:** pass `*const Scope` to spawned threads — no snapshots or restore calls needed. See `examples/concurrent.zig`.
 
-libfx follows the same pattern as Zig's `std.Io` — an explicit capability value passed through the call stack. Rather than creating a full algebraic effect system with continuations, libfx creates simple tail-resumptive effects designed to compose naturally with `std.Io` for full algebraic effects. This keeps it a focused ~180 line library.
+libfx follows the same pattern as Zig's `std.Io` — an explicit capability value passed through the call stack. Rather than creating a full algebraic effect system with continuations, libfx creates simple tail-resumptive effects designed to compose naturally with `std.Io` for full algebraic effects. This keeps it a focused ~250 line library.
 
 Inspired by [Effect.ts](https://effect.website) and algebraic effects research by Daan Leijen, specifically [Generalized Evidence Passing](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/) and [Implementing Algebraic Effects in C](https://www.microsoft.com/en-us/research/publication/implementing-algebraic-effects-c/).
 
@@ -86,6 +86,7 @@ Run benchmarks yourself: `zig build bench`
 - **`fx.Scope.init(.{ .{ Effect, &handler }, ... })`** — create a scope with handlers bound to effects.
 - **`Effect.exec(&scope, .op, arg)`** — dispatch an operation through the scope's handler. Void args use `{}`.
 - **`scope.bind(Effect, &handler)`** — return a new scope with one handler replaced. The original scope is unchanged.
+- **`fx.Contract(.{ EffectA, EffectB, ... })`** — declare a required set of effects. The returned type has an `init` that works like `Scope.init` but produces a compile error if any listed effect is missing a handler. Useful when a library defines which effects it needs and consumers wire them up in a separate module. See `examples/pipeline.zig`.
 
 Handlers are plain structs with one method per operation. Handlers that need to call other effects add `sc: *const fx.Scope` as a parameter — the library detects this at comptime and forwards the scope automatically:
 
@@ -137,4 +138,4 @@ test "processOrder logs the order id" {
 
 ## Internals
 
-~180 lines. Stack-allocated scope containing an array of 16-byte slots (state pointer + vtable pointer), indexed by a runtime-assigned slot ID. Vtables are comptime-generated structs of typed trampolines — all type erasure is internal, users never see `*anyopaque`. No threadlocals, no hidden state. The scope is passed explicitly, like `std.mem.Allocator` or `std.Io`.
+~250 lines. Stack-allocated scope containing an array of 16-byte slots (state pointer + vtable pointer), indexed by a runtime-assigned slot ID. Vtables are comptime-generated structs of typed trampolines — all type erasure is internal, users never see `*anyopaque`. No threadlocals, no hidden state. The scope is passed explicitly, like `std.mem.Allocator` or `std.Io`.

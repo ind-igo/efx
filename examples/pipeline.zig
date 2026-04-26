@@ -10,6 +10,8 @@ const Metrics = fx.Effect(union(enum) { inc: fx.Op([]const u8, void), get: fx.Op
 const Clock = fx.Effect(union(enum) { now_ms: fx.Op(void, i64) });
 const FeatureFlags = fx.Effect(union(enum) { enabled: fx.Op([]const u8, bool) });
 
+const Pipeline = fx.Contract(.{ Logger, Metrics, Clock, FeatureFlags });
+
 // ── Domain ─────────────────────────────────────────────────────────
 
 const Record = struct { id: []const u8, email: []const u8, payload: []const u8, enriched_at: i64 = 0, stored_at: i64 = 0 };
@@ -109,7 +111,7 @@ const TestFlags = struct {
 };
 
 fn testScope(log: *TestLogger, met: *CounterMap, clk: *TestClock, flg: *TestFlags) fx.Scope {
-    return fx.Scope.init(.{ .{ Logger, log }, .{ Metrics, met }, .{ Clock, clk }, .{ FeatureFlags, flg } });
+    return Pipeline.init(.{ .{ Logger, log }, .{ Metrics, met }, .{ Clock, clk }, .{ FeatureFlags, flg } });
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -224,7 +226,7 @@ pub fn main(init: std.process.Init) !void {
     var met = CounterMap{};
     var clk = WallClock{ .io = init.io };
     var flg = LiveFlags{};
-    const sc = fx.Scope.init(.{ .{ Logger, &log }, .{ Metrics, &met }, .{ Clock, &clk }, .{ FeatureFlags, &flg } });
+    const sc = Pipeline.init(.{ .{ Logger, &log }, .{ Metrics, &met }, .{ Clock, &clk }, .{ FeatureFlags, &flg } });
 
     var records = [_]Record{
         .{ .id = "1", .email = "alice@example.com", .payload = "order_100" },

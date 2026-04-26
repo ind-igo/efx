@@ -7,7 +7,7 @@ const root = @import("root");
 pub const MAX_EFFECTS: usize = if (@hasDecl(root, "libfx_max_effects"))
     root.libfx_max_effects
 else
-    64;
+    16;
 
 // ── Constants ─────────────────────────────────────────────────────────
 
@@ -164,6 +164,31 @@ pub const Scope = struct {
         return copy;
     }
 };
+
+// ── Contract — comptime-checked effect bundle ────────────────────────
+
+pub fn Contract(comptime effects: anytype) type {
+    return struct {
+        pub fn init(pairs: anytype) Scope {
+            inline for (effects) |E| {
+                if (comptime !pairsProvide(@TypeOf(pairs), E))
+                    @compileError("Contract: missing handler for " ++ @typeName(E));
+            }
+            return Scope.init(pairs);
+        }
+
+        fn pairsProvide(comptime Pairs: type, comptime E: type) bool {
+            for (@typeInfo(Pairs).@"struct".fields) |f| {
+                const inner = @typeInfo(f.type).@"struct".fields;
+                if (inner[0].is_comptime) {
+                    const ptr: *const type = @ptrCast(@alignCast(inner[0].default_value_ptr.?));
+                    if (ptr.* == E) return true;
+                }
+            }
+            return false;
+        }
+    };
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -501,4 +526,38 @@ test "handler receives scope for cross-effect dispatch" {
     CrossEffectLogger.exec(&sc, .log_and_count, "world");
 
     try testing.expectEqual(@as(usize, 2), counter.count);
+}
+
+// ── Test: contract init succeeds for complete pairs ─────────────────
+
+test "contract init succeeds for complete pairs" {
+    const Proto = Contract(.{ TestLogger, TestConfig });
+
+    var logger = StderrLoggerHandler{};
+    var config = MapConfigHandler{ .value = "ok" };
+
+    const sc = Proto.init(.{
+        .{ TestLogger, &logger },
+        .{ TestConfig, &config },
+    });
+
+    TestLogger.exec(&sc, .info, "hello");
+    try testing.expectEqual(@as(usize, 1), logger.call_count);
+}
+
+// ── Test: contract allows extra effects ─────────────────────────────
+
+test "contract allows extra effects" {
+    const Proto = Contract(.{TestLogger});
+
+    var logger = StderrLoggerHandler{};
+    var config = MapConfigHandler{ .value = "extra" };
+
+    const sc = Proto.init(.{
+        .{ TestLogger, &logger },
+        .{ TestConfig, &config },
+    });
+
+    const val = TestConfig.exec(&sc, .get, "key");
+    try testing.expectEqualStrings("extra", val.?);
 }
