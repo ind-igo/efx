@@ -18,6 +18,7 @@ Inspired by [Effect.ts](https://effect.website) and algebraic effects research b
 ## Example
 
 ```zig
+const std = @import("std");
 const fx = @import("fx");
 
 // Define an effect — a tagged union of operations
@@ -91,6 +92,8 @@ Run benchmarks yourself: `zig build bench`
 Handlers are plain structs with one method per operation. Handlers that need to call other effects add `sc: *const fx.Scope` as a parameter — the library detects this at comptime and forwards the scope automatically:
 
 ```zig
+const std = @import("std");
+
 // Simple handler — no scope needed
 const StderrLogger = struct {
     pub fn info(_: *StderrLogger, msg: []const u8) void {
@@ -114,6 +117,8 @@ See the `examples/` folder for full usage.
 Effects are naturally testable — handler structs *are* the mocks:
 
 ```zig
+const std = @import("std");
+
 const TestLogger = struct {
     buf: [64][]const u8 = undefined,
     len: usize = 0,
