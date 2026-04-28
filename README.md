@@ -110,6 +110,29 @@ const AuditLogger = struct {
 };
 ```
 
+For optional behavior, keep the effect in the contract and bind a no-op handler when the behavior is disabled. This keeps dispatch simple and fast: call sites always use `Effect.exec`, and handler choice decides whether anything happens.
+
+```zig
+const Metrics = fx.Effect(union(enum) {
+    inc: fx.Op([]const u8, void),
+});
+
+const App = fx.Contract(.{ Logger, Metrics });
+
+const NoopMetrics = struct {
+    pub fn inc(_: *NoopMetrics, _: []const u8) void {}
+};
+
+var log = StderrLogger{};
+var metrics = NoopMetrics{};
+const scope = App.init(.{
+    .{ Logger, &log },
+    .{ Metrics, &metrics },
+});
+
+Metrics.exec(&scope, .inc, "requests"); // no-op unless a real handler is bound
+```
+
 See the `examples/` folder for full usage.
 
 ## Testing

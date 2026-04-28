@@ -561,3 +561,44 @@ test "contract allows extra effects" {
     const val = TestConfig.exec(&sc, .get, "key");
     try testing.expectEqualStrings("extra", val.?);
 }
+
+// ── Test: optional behavior via no-op handlers ─────────────────────
+
+const OptionalMetrics = Effect(union(enum) {
+    inc: Op([]const u8, void),
+});
+
+const NoopMetricsHandler = struct {
+    fn inc(_: *NoopMetricsHandler, _: []const u8) void {}
+};
+
+const CountingMetricsHandler = struct {
+    count: usize = 0,
+
+    fn inc(self: *CountingMetricsHandler, _: []const u8) void {
+        self.count += 1;
+    }
+};
+
+test "contract models optional effects with no-op handlers" {
+    const App = Contract(.{ TestLogger, OptionalMetrics });
+
+    var logger = StderrLoggerHandler{};
+    var noop_metrics = NoopMetricsHandler{};
+
+    const sc = App.init(.{
+        .{ TestLogger, &logger },
+        .{ OptionalMetrics, &noop_metrics },
+    });
+
+    TestLogger.exec(&sc, .info, "work started");
+    OptionalMetrics.exec(&sc, .inc, "work.count");
+
+    try testing.expectEqual(@as(usize, 1), logger.call_count);
+
+    var real_metrics = CountingMetricsHandler{};
+    const observed = sc.bind(OptionalMetrics, &real_metrics);
+    OptionalMetrics.exec(&observed, .inc, "work.count");
+
+    try testing.expectEqual(@as(usize, 1), real_metrics.count);
+}
