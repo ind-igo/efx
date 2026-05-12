@@ -24,16 +24,18 @@ fn worker(sc: *const fx.Scope, id: []const u8) u64 {
 fn fanOut(io: std.Io, sc: *const fx.Scope, tasks: []const []const u8) u64 {
     var futures: [8]std.Io.Future(u64) = undefined;
     const n = @min(tasks.len, futures.len);
+    var spawned: usize = 0;
 
-    for (tasks[0..n], futures[0..n]) |id, *f| {
-        f.* = io.concurrent(worker, .{ sc, id }) catch {
+    for (tasks[0..n]) |id| {
+        futures[spawned] = io.concurrent(worker, .{ sc, id }) catch {
             Logger.exec(sc, .info, "spawn failed");
             continue;
         };
+        spawned += 1;
     }
 
     var total: u64 = 0;
-    for (futures[0..n]) |*f| {
+    for (futures[0..spawned]) |*f| {
         total += f.await(io);
     }
     return total;

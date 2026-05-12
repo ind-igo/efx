@@ -17,7 +17,7 @@ var next_slot: usize = 0;
 
 pub const Slot = struct {
     state: *anyopaque = undefined,
-    vtable: *const anyopaque = undefined,
+    vtable: ?*const anyopaque = null,
 };
 
 // ── Op — operation signature marker ───────────────────────────────────
@@ -130,8 +130,10 @@ pub fn Effect(comptime U: type) type {
             arg: fields[@intFromEnum(op)].type.ArgType,
         ) fields[@intFromEnum(op)].type.ResultType {
             const s = @atomicLoad(usize, &slot, .acquire);
+            if (s == UNASSIGNED) @panic("libfx: effect was never bound in any scope: " ++ @typeName(U));
             const entry = sc._slots[s];
-            const vt: *const Vtable = @ptrCast(@alignCast(entry.vtable));
+            const opaque_vt = entry.vtable orelse @panic("libfx: no handler bound in this scope for " ++ @typeName(U));
+            const vt: *const Vtable = @ptrCast(@alignCast(opaque_vt));
             const trampoline = @field(vt.*, fields[@intFromEnum(op)].name);
             return trampoline(entry.state, sc, arg);
         }
@@ -186,6 +188,34 @@ pub fn Contract(comptime effects: anytype) type {
                 }
             }
             return false;
+        }
+    };
+}
+
+// ── Exit — handler-directed early exit with a payload ────────────────
+
+/// One-shot "abort" semantics on top of Zig error unions: a handler that
+/// wants to stop the computation and deliver a result to the scope's
+/// installer embeds an `Exit(T)`, calls `abort(value)`, and returns the
+/// resulting `error.FxAbort`. Business logic propagates it with `try`;
+/// the installation site catches `error.FxAbort` and reads `payload`.
+///
+/// Operations that may abort declare it in their result type:
+///   check: fx.Op(u64, error{FxAbort}!void)
+///
+/// Caveats: `error.FxAbort` is one shared error value, so `payload` is only
+/// meaningful for the Exit embedded in the handler *you* installed — with
+/// multiple abort-capable handlers in a scope, check each one's payload.
+/// Reset `payload` to null before reusing a handler across runs.
+pub fn Exit(comptime T: type) type {
+    if (@typeInfo(T) == .optional)
+        @compileError("Exit(T) does not support optional T: abort(null) would be indistinguishable from 'never aborted'");
+    return struct {
+        payload: ?T = null,
+
+        pub fn abort(self: *@This(), value: T) error{FxAbort} {
+            self.payload = value;
+            return error.FxAbort;
         }
     };
 }
@@ -579,6 +609,42 @@ const CountingMetricsHandler = struct {
         self.count += 1;
     }
 };
+
+// ── Test: Exit delivers a payload to the installer ──────────────────
+
+const Budget = Effect(union(enum) {
+    spend: Op(u64, error{FxAbort}!void),
+});
+
+const BudgetHandler = struct {
+    remaining: u64,
+    exit: Exit(u64) = .{},
+
+    fn spend(self: *BudgetHandler, amount: u64) error{FxAbort}!void {
+        if (amount > self.remaining) return self.exit.abort(self.remaining);
+        self.remaining -= amount;
+    }
+};
+
+fn spendAll(sc: *const Scope, costs: []const u64) error{FxAbort}!usize {
+    for (costs) |cost| try Budget.exec(sc, .spend, cost);
+    return costs.len;
+}
+
+test "Exit delivers a payload to the installer" {
+    var budget = BudgetHandler{ .remaining = 10 };
+    const sc = Scope.init(.{.{ Budget, &budget }});
+
+    const result = spendAll(&sc, &.{ 4, 3, 9, 1 });
+    try testing.expectError(error.FxAbort, result);
+    try testing.expectEqual(@as(?u64, 3), budget.exit.payload);
+
+    // A run that fits the budget completes normally.
+    var budget2 = BudgetHandler{ .remaining = 10 };
+    const sc2 = Scope.init(.{.{ Budget, &budget2 }});
+    try testing.expectEqual(@as(usize, 3), try spendAll(&sc2, &.{ 4, 3, 3 }));
+    try testing.expectEqual(@as(?u64, null), budget2.exit.payload);
+}
 
 test "contract models optional effects with no-op handlers" {
     const App = Contract(.{ TestLogger, OptionalMetrics });

@@ -3,7 +3,7 @@
 Tail-resumptive algebraic effects for Zig. Write programs as sequences of abstract operations and plug in different implementations without changing the logic. Handlers are plain structs. Dispatch is zero-cost. Everything is explicit.
 
 Effects are a compositional primitive that allows you to model any boundary where you want to decouple logic from implementation:
-- **Observability:** logging, metrics, tracing, feature flags. The original use case. Still the easiest way to get started. See `examples/logger.zig`.
+- **Observability:** logging, metrics, tracing, feature flags. Still the easiest way to get started. See `examples/logger.zig`.
 - **Testing:** handler structs are the mocks, no framework needed. Capture calls and assert, inject faults, replay from a recorded trace, or run full deterministic simulation. See `examples/dst.zig`.
 - **Data transformation:** validation, transformation, and enrichment as effects. Test each stage in isolation, swap backends without rewiring the pipeline. See `examples/pipeline.zig`.
 - **Protocols:** consensus, replication, TLS handshakes. Write the protocol as effect calls, swap handlers for different backends or transports.
@@ -88,6 +88,11 @@ Run benchmarks yourself: `zig build bench`
 - **`Effect.exec(&scope, .op, arg)`** — dispatch an operation through the scope's handler. Void args use `{}`.
 - **`scope.bind(Effect, &handler)`** — return a new scope with one handler replaced. The original scope is unchanged.
 - **`fx.Contract(.{ EffectA, EffectB, ... })`** — declare a required set of effects. The returned type has an `init` that works like `Scope.init` but produces a compile error if any listed effect is missing a handler. Useful when a library defines which effects it needs and consumers wire them up in a separate module. See `examples/pipeline.zig`.
+- **`fx.Exit(T)`** — handler-directed early exit with a payload. The handler calls `exit.abort(value)` and returns `error.FxAbort`; business logic propagates it with `try`; the installation site catches it and reads `exit.payload`. Since `error.FxAbort` is one shared error value, `payload` is only meaningful for the handler you installed — with several abort-capable handlers in one scope, check each handler's payload after catching.
+
+Dispatching an effect with no handler bound panics with a message naming the effect (use `Contract` to catch this at compile time instead).
+
+Handlers may suspend: a handler that blocks on `std.Io.Queue` inside a coroutine turns a plain effect into a generator/stream — the caller's coroutine stack is the continuation. Call sites are unchanged. See `examples/generator.zig` and `docs/IO_COMPOSITION.md`.
 
 Handlers are plain structs with one method per operation. Handlers that need to call other effects add `sc: *const fx.Scope` as a parameter — the library detects this at comptime and forwards the scope automatically:
 
