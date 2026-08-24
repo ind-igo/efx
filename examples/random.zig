@@ -1,15 +1,15 @@
 /// Random effect example — OS entropy in production, seeded PRNG in tests.
 const std = @import("std");
-const fx = @import("efx");
+const efx = @import("efx");
 
 // ── Effect definition ────────────────────────────────────────────────
 
 pub const Range = struct { min: u64, max: u64 };
 
-pub const Random = fx.Effect(union(enum) {
-    int_u64: fx.Op(void, u64),
-    range: fx.Op(Range, u64),
-    boolean: fx.Op(void, bool),
+pub const Random = efx.Effect(union(enum) {
+    int_u64: efx.Op(void, u64),
+    range: efx.Op(Range, u64),
+    boolean: efx.Op(void, bool),
 });
 
 // ── Handlers ─────────────────────────────────────────────────────────
@@ -60,12 +60,12 @@ pub const SeededHandler = struct {
 
 // ── Business logic ───────────────────────────────────────────────────
 
-fn pick(sc: *const fx.Scope, comptime T: type, items: []const T) T {
+fn pick(sc: *const efx.Scope, comptime T: type, items: []const T) T {
     const idx = Random.exec(sc, .range, .{ .min = 0, .max = items.len - 1 });
     return items[idx];
 }
 
-fn rollDice(sc: *const fx.Scope) u64 {
+fn rollDice(sc: *const efx.Scope) u64 {
     return Random.exec(sc, .range, .{ .min = 1, .max = 6 });
 }
 
@@ -73,7 +73,7 @@ fn rollDice(sc: *const fx.Scope) u64 {
 
 pub fn main(init: std.process.Init) !void {
     var handler = SystemHandler{ .io = init.io };
-    const sc = fx.Scope.init(.{.{ Random, &handler }});
+    const sc = efx.Scope.init(.{.{ Random, &handler }});
 
     const colors = [_][]const u8{ "red", "blue", "green", "yellow" };
 
@@ -86,13 +86,13 @@ pub fn main(init: std.process.Init) !void {
 
 test "seeded random is deterministic" {
     var rng1 = SeededHandler.init(42);
-    const sc1 = fx.Scope.init(.{.{ Random, &rng1 }});
+    const sc1 = efx.Scope.init(.{.{ Random, &rng1 }});
 
     const a = Random.exec(&sc1, .int_u64, {});
     const b = Random.exec(&sc1, .int_u64, {});
 
     var rng2 = SeededHandler.init(42);
-    const sc2 = fx.Scope.init(.{.{ Random, &rng2 }});
+    const sc2 = efx.Scope.init(.{.{ Random, &rng2 }});
 
     try std.testing.expectEqual(a, Random.exec(&sc2, .int_u64, {}));
     try std.testing.expectEqual(b, Random.exec(&sc2, .int_u64, {}));
@@ -100,13 +100,13 @@ test "seeded random is deterministic" {
 
 test "pick is deterministic with seed" {
     var rng = SeededHandler.init(99);
-    const sc = fx.Scope.init(.{.{ Random, &rng }});
+    const sc = efx.Scope.init(.{.{ Random, &rng }});
 
     const colors = [_][]const u8{ "red", "blue", "green", "yellow" };
     const first = pick(&sc, []const u8, &colors);
 
     var rng2 = SeededHandler.init(99);
-    const sc2 = fx.Scope.init(.{.{ Random, &rng2 }});
+    const sc2 = efx.Scope.init(.{.{ Random, &rng2 }});
 
     try std.testing.expectEqualStrings(first, pick(&sc2, []const u8, &colors));
 }

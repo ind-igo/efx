@@ -23,7 +23,7 @@ Covers: logging, config, metrics, DI, state, readers, tracing. The large
 majority of real-world effects.
 
 Implementation: `Scope` is the evidence vector — an array of
-`(state, vtable)` slots, passed explicitly as `*const fx.Scope`.
+`(state, vtable)` slots, passed explicitly as `*const efx.Scope`.
 O(1) dispatch, zero allocation.
 
 ### Layer 2: One-shot suspension (composition with Io)
@@ -37,8 +37,8 @@ So a suspending effect needs no new dispatch machinery — it is an ordinary
 tail-resumptive effect whose *handler* blocks on `Io.Queue`:
 
 ```zig
-const Source = fx.Effect(union(enum) {
-    next: fx.Op(void, ?u64),
+const Source = efx.Effect(union(enum) {
+    next: efx.Op(void, ?u64),
 });
 
 // From the caller's coroutine: perform → suspend → resume with a value.
@@ -65,14 +65,14 @@ Resuming a continuation multiple times requires stack copying. Not supported,
 rarely needed — Leijen notes almost all real effects are tail-resumptive or
 one-shot.
 
-## Handler-Directed Exit (`fx.Exit`)
+## Handler-Directed Exit (`efx.Exit`)
 
 A real algebraic handler can discard the continuation and return a value to
 its installation point (exceptions, early exit). `exec` must return to the
-caller, so efx maps this onto Zig's error unions: `fx.Exit(T)` carries a
-payload, the handler returns `error.FxAbort`, business logic propagates it
+caller, so efx maps this onto Zig's error unions: `efx.Exit(T)` carries a
+payload, the handler returns `error.EfxAbort`, business logic propagates it
 with `try`, and the installer catches it and reads the payload. See the
-"Exit delivers a payload to the installer" test in `src/fx.zig`.
+"Exit delivers a payload to the installer" test in `src/efx.zig`.
 
 This is one-shot *abort* semantics built on unwinding Zig already has —
 not handler-directed control transfer in the general sense.
@@ -115,7 +115,7 @@ The scope must outlive the task, same as any borrowed pointer.
 | setjmp/longjmp machinery   | Custom                           | Io coroutines (stdlib) |
 | Stack segment management   | Custom                           | Io manages (stdlib)    |
 | Stack copying (multi-shot) | Custom memcpy                    | Not supported          |
-| Abort to handler           | longjmp                          | `fx.Exit` + error union |
+| Abort to handler           | longjmp                          | `efx.Exit` + error union |
 
 Neither library knows about the other. efx manages WHAT ambient context is
 available (evidence); Io manages HOW concurrent work is scheduled
@@ -145,7 +145,7 @@ block on a queue captures `io` as a field at construction time
 
 ```zig
 // 1. Declare the world as a Contract — this IS the runtime's interface.
-const Runtime = fx.Contract(.{ Clock, Log, Net, Storage, Tasks });
+const Runtime = efx.Contract(.{ Clock, Log, Net, Storage, Tasks });
 
 // 2. Production wiring: main owns Io, handlers embed it.
 pub fn main(init: std.process.Init) !void {
@@ -224,10 +224,10 @@ affinity, so this is safe as long as the scope outlives the task group.
 
 - **No handler-directed control transfer.** Handlers cannot redirect
   execution anywhere except back to the caller (normal return) or up the
-  error path (`fx.Exit`). Full `ctl` operations are out of scope.
+  error path (`efx.Exit`). Full `ctl` operations are out of scope.
 - **No effect rows.** A function taking `*const Scope` may perform any
   effect; missing handlers panic at dispatch (`exec` checks), they are not
-  compile errors at call sites. `fx.Contract` checks completeness at the
+  compile errors at call sites. `efx.Contract` checks completeness at the
   wiring site only.
 - **`std.Io` is young.** Validated against Zig 0.16.0. The
   `concurrent`/`Queue`/`Future` surface may still change.

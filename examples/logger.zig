@@ -1,13 +1,13 @@
 /// Logger effect example — stderr, JSON, and test handlers for the same effect.
 const std = @import("std");
-const fx = @import("efx");
+const efx = @import("efx");
 
 // ── Effect definition ────────────────────────────────────────────────
 
-pub const Logger = fx.Effect(union(enum) {
-    info: fx.Op([]const u8, void),
-    warn: fx.Op([]const u8, void),
-    err: fx.Op([]const u8, void),
+pub const Logger = efx.Effect(union(enum) {
+    info: efx.Op([]const u8, void),
+    warn: efx.Op([]const u8, void),
+    err: efx.Op([]const u8, void),
 });
 
 // ── Handlers ─────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ pub const TestHandler = struct {
 
 // ── Business logic that uses the effect ──────────────────────────────
 
-fn processOrder(sc: *const fx.Scope, order_id: []const u8) void {
+fn processOrder(sc: *const efx.Scope, order_id: []const u8) void {
     Logger.exec(sc, .info, order_id);
     Logger.exec(sc, .info, "order complete");
 }
@@ -71,7 +71,7 @@ fn processOrder(sc: *const fx.Scope, order_id: []const u8) void {
 
 pub fn main(_: std.process.Init) !void {
     var handler = StderrHandler{};
-    const sc = fx.Scope.init(.{.{ Logger, &handler }});
+    const sc = efx.Scope.init(.{.{ Logger, &handler }});
 
     processOrder(&sc, "order_42");
 
@@ -85,7 +85,7 @@ pub fn main(_: std.process.Init) !void {
 
 test "processOrder logs order id" {
     var handler = TestHandler{};
-    const sc = fx.Scope.init(.{.{ Logger, &handler }});
+    const sc = efx.Scope.init(.{.{ Logger, &handler }});
 
     processOrder(&sc, "order_99");
 

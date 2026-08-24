@@ -19,12 +19,12 @@ Inspired by [Effect.ts](https://effect.website) and algebraic effects research b
 
 ```zig
 const std = @import("std");
-const fx = @import("efx");
+const efx = @import("efx");
 
 // Define an effect — a tagged union of operations
-const Logger = fx.Effect(union(enum) {
-    info: fx.Op([]const u8, void),
-    err:  fx.Op([]const u8, void),
+const Logger = efx.Effect(union(enum) {
+    info: efx.Op([]const u8, void),
+    err:  efx.Op([]const u8, void),
 });
 
 // Write a handler — a plain struct with matching methods
@@ -39,7 +39,7 @@ const StderrLogger = struct {
 
 // Create a scope and dispatch
 var logger = StderrLogger{};
-const scope = fx.Scope.init(.{.{ Logger, &logger }});
+const scope = efx.Scope.init(.{.{ Logger, &logger }});
 
 Logger.exec(&scope, .info, "hello");  // dispatches through handler
 ```
@@ -62,8 +62,8 @@ Add to your `build.zig.zon`:
 Then in `build.zig`:
 
 ```zig
-const fx = b.dependency("efx", .{}).module("fx");
-exe.root_module.addImport("fx", fx);
+const efx = b.dependency("efx", .{}).module("efx");
+exe.root_module.addImport("efx", efx);
 ```
 
 ## Performance
@@ -84,17 +84,17 @@ Run benchmarks yourself: `zig build bench`
 
 ## API
 
-- **`fx.Scope.init(.{ .{ Effect, &handler }, ... })`** — create a scope with handlers bound to effects.
+- **`efx.Scope.init(.{ .{ Effect, &handler }, ... })`** — create a scope with handlers bound to effects.
 - **`Effect.exec(&scope, .op, arg)`** — dispatch an operation through the scope's handler. Void args use `{}`.
 - **`scope.bind(Effect, &handler)`** — return a new scope with one handler replaced. The original scope is unchanged.
-- **`fx.Contract(.{ EffectA, EffectB, ... })`** — declare a required set of effects. The returned type has an `init` that works like `Scope.init` but produces a compile error if any listed effect is missing a handler. Useful when a library defines which effects it needs and consumers wire them up in a separate module. See `examples/pipeline.zig`.
-- **`fx.Exit(T)`** — handler-directed early exit with a payload. The handler calls `exit.abort(value)` and returns `error.FxAbort`; business logic propagates it with `try`; the installation site catches it and reads `exit.payload`. Since `error.FxAbort` is one shared error value, `payload` is only meaningful for the handler you installed — with several abort-capable handlers in one scope, check each handler's payload after catching.
+- **`efx.Contract(.{ EffectA, EffectB, ... })`** — declare a required set of effects. The returned type has an `init` that works like `Scope.init` but produces a compile error if any listed effect is missing a handler. Useful when a library defines which effects it needs and consumers wire them up in a separate module. See `examples/pipeline.zig`.
+- **`efx.Exit(T)`** — handler-directed early exit with a payload. The handler calls `exit.abort(value)` and returns `error.EfxAbort`; business logic propagates it with `try`; the installation site catches it and reads `exit.payload`. Since `error.EfxAbort` is one shared error value, `payload` is only meaningful for the handler you installed — with several abort-capable handlers in one scope, check each handler's payload after catching.
 
 Dispatching an effect with no handler bound panics with a message naming the effect (use `Contract` to catch this at compile time instead).
 
 Handlers may suspend: a handler that blocks on `std.Io.Queue` inside a coroutine turns a plain effect into a generator/stream — the caller's coroutine stack is the continuation. Call sites are unchanged. See `examples/generator.zig` and `docs/IO_COMPOSITION.md`.
 
-Handlers are plain structs with one method per operation. Handlers that need to call other effects add `sc: *const fx.Scope` as a parameter — the library detects this at comptime and forwards the scope automatically:
+Handlers are plain structs with one method per operation. Handlers that need to call other effects add `sc: *const efx.Scope` as a parameter — the library detects this at comptime and forwards the scope automatically:
 
 ```zig
 const std = @import("std");
@@ -108,7 +108,7 @@ const StderrLogger = struct {
 
 // Composing handler — receives scope, calls other effects
 const AuditLogger = struct {
-    pub fn info(self: *AuditLogger, sc: *const fx.Scope, msg: []const u8) void {
+    pub fn info(self: *AuditLogger, sc: *const efx.Scope, msg: []const u8) void {
         Metrics.exec(sc, .inc, "log.info");
         std.debug.print("[INFO] {s}\n", .{msg});
     }
@@ -118,11 +118,11 @@ const AuditLogger = struct {
 For optional behavior, keep the effect in the contract and bind a no-op handler when the behavior is disabled. This keeps dispatch simple and fast: call sites always use `Effect.exec`, and handler choice decides whether anything happens.
 
 ```zig
-const Metrics = fx.Effect(union(enum) {
-    inc: fx.Op([]const u8, void),
+const Metrics = efx.Effect(union(enum) {
+    inc: efx.Op([]const u8, void),
 });
 
-const App = fx.Contract(.{ Logger, Metrics });
+const App = efx.Contract(.{ Logger, Metrics });
 
 const NoopMetrics = struct {
     pub fn inc(_: *NoopMetrics, _: []const u8) void {}
@@ -161,7 +161,7 @@ const TestLogger = struct {
 
 test "processOrder logs the order id" {
     var log = TestLogger{};
-    const scope = fx.Scope.init(.{.{ Logger, &log }});
+    const scope = efx.Scope.init(.{.{ Logger, &log }});
 
     processOrder(&scope, "order_99");
 

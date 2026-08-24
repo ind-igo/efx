@@ -1,16 +1,16 @@
 /// Data-processing pipeline — validate → enrich → store.
 /// Four effects compose naturally; tests swap all handlers to deterministic versions.
 const std = @import("std");
-const fx = @import("efx");
+const efx = @import("efx");
 
 // ── Effects ────────────────────────────────────────────────────────
 
-const Logger = fx.Effect(union(enum) { info: fx.Op([]const u8, void), err: fx.Op([]const u8, void) });
-const Metrics = fx.Effect(union(enum) { inc: fx.Op([]const u8, void), get: fx.Op([]const u8, u64) });
-const Clock = fx.Effect(union(enum) { now_ms: fx.Op(void, i64) });
-const FeatureFlags = fx.Effect(union(enum) { enabled: fx.Op([]const u8, bool) });
+const Logger = efx.Effect(union(enum) { info: efx.Op([]const u8, void), err: efx.Op([]const u8, void) });
+const Metrics = efx.Effect(union(enum) { inc: efx.Op([]const u8, void), get: efx.Op([]const u8, u64) });
+const Clock = efx.Effect(union(enum) { now_ms: efx.Op(void, i64) });
+const FeatureFlags = efx.Effect(union(enum) { enabled: efx.Op([]const u8, bool) });
 
-const Pipeline = fx.Contract(.{ Logger, Metrics, Clock, FeatureFlags });
+const Pipeline = efx.Contract(.{ Logger, Metrics, Clock, FeatureFlags });
 
 // ── Domain ─────────────────────────────────────────────────────────
 
@@ -19,7 +19,7 @@ const Result = struct { processed: u32 = 0, failed: u32 = 0, skipped: u32 = 0 };
 
 // ── Pipeline stages ────────────────────────────────────────────────
 
-fn validate(sc: *const fx.Scope, rec: *const Record) bool {
+fn validate(sc: *const efx.Scope, rec: *const Record) bool {
     if (rec.email.len == 0) {
         Logger.exec(sc, .err, "missing email");
         Metrics.exec(sc, .inc, "validate.fail");
@@ -36,7 +36,7 @@ fn validate(sc: *const fx.Scope, rec: *const Record) bool {
     return false;
 }
 
-fn enrich(sc: *const fx.Scope, rec: *Record) void {
+fn enrich(sc: *const efx.Scope, rec: *Record) void {
     if (!FeatureFlags.exec(sc, .enabled, "enrichment")) {
         Logger.exec(sc, .info, "enrichment skipped");
         return;
@@ -45,13 +45,13 @@ fn enrich(sc: *const fx.Scope, rec: *Record) void {
     Metrics.exec(sc, .inc, "enrich.ok");
 }
 
-fn store(sc: *const fx.Scope, rec: *Record) void {
+fn store(sc: *const efx.Scope, rec: *Record) void {
     rec.stored_at = Clock.exec(sc, .now_ms, {});
     Logger.exec(sc, .info, "stored");
     Metrics.exec(sc, .inc, "store.ok");
 }
 
-fn processBatch(sc: *const fx.Scope, records: []Record) Result {
+fn processBatch(sc: *const efx.Scope, records: []Record) Result {
     var r = Result{};
     Logger.exec(sc, .info, "batch start");
     for (records) |*rec| {
@@ -110,7 +110,7 @@ const TestFlags = struct {
     pub fn enabled(self: *TestFlags, name: []const u8) bool { return std.mem.eql(u8, name, "enrichment") and self.enrichment_on; }
 };
 
-fn testScope(log: *TestLogger, met: *CounterMap, clk: *TestClock, flg: *TestFlags) fx.Scope {
+fn testScope(log: *TestLogger, met: *CounterMap, clk: *TestClock, flg: *TestFlags) efx.Scope {
     return Pipeline.init(.{ .{ Logger, log }, .{ Metrics, met }, .{ Clock, clk }, .{ FeatureFlags, flg } });
 }
 

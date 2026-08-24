@@ -1,7 +1,7 @@
 /// OpenTelemetry-style effect example.
 /// One effect captures tracing and metrics; handlers decide where records go.
 const std = @import("std");
-const fx = @import("efx");
+const efx = @import("efx");
 
 // Effect definition
 
@@ -84,13 +84,13 @@ const MetricPoint = struct {
     attrs: []const Attr = &.{},
 };
 
-const Otel = fx.Effect(union(enum) {
-    start_span: fx.Op(StartSpan, Span),
-    add_event: fx.Op(SpanEvent, void),
-    set_status: fx.Op(SpanStatusUpdate, void),
-    end_span: fx.Op(EndSpan, void),
-    counter: fx.Op(MetricPoint, void),
-    histogram: fx.Op(MetricPoint, void),
+const Otel = efx.Effect(union(enum) {
+    start_span: efx.Op(StartSpan, Span),
+    add_event: efx.Op(SpanEvent, void),
+    set_status: efx.Op(SpanStatusUpdate, void),
+    end_span: efx.Op(EndSpan, void),
+    counter: efx.Op(MetricPoint, void),
+    histogram: efx.Op(MetricPoint, void),
 });
 
 // Business logic
@@ -100,7 +100,7 @@ const Order = struct {
     total_cents: u64,
 };
 
-fn checkout(sc: *const fx.Scope, order: Order) bool {
+fn checkout(sc: *const efx.Scope, order: Order) bool {
     const span = Otel.exec(sc, .start_span, .{
         .name = "checkout",
         .kind = .server,
@@ -280,7 +280,7 @@ fn spanId(id: u32) SpanId {
 
 test "checkout records a successful span and metrics" {
     var otel = TestOtel{};
-    const sc = fx.Scope.init(.{.{ Otel, &otel }});
+    const sc = efx.Scope.init(.{.{ Otel, &otel }});
 
     try std.testing.expect(checkout(&sc, .{ .id = "ord_1", .total_cents = 2599 }));
 
@@ -297,7 +297,7 @@ test "checkout records a successful span and metrics" {
 
 test "checkout records a failed span" {
     var otel = TestOtel{};
-    const sc = fx.Scope.init(.{.{ Otel, &otel }});
+    const sc = efx.Scope.init(.{.{ Otel, &otel }});
 
     try std.testing.expect(!checkout(&sc, .{ .id = "ord_empty", .total_cents = 0 }));
 
@@ -311,7 +311,7 @@ test "checkout records a failed span" {
 
 test "observability can be disabled with a no-op handler" {
     var otel = NoopOtel{};
-    const sc = fx.Scope.init(.{.{ Otel, &otel }});
+    const sc = efx.Scope.init(.{.{ Otel, &otel }});
 
     try std.testing.expect(checkout(&sc, .{ .id = "ord_2", .total_cents = 100 }));
 }
@@ -320,7 +320,7 @@ test "observability can be disabled with a no-op handler" {
 
 pub fn main(_: std.process.Init) !void {
     var otel = StderrOtel{};
-    const sc = fx.Scope.init(.{.{ Otel, &otel }});
+    const sc = efx.Scope.init(.{.{ Otel, &otel }});
 
     _ = checkout(&sc, .{ .id = "ord_42", .total_cents = 4200 });
     _ = checkout(&sc, .{ .id = "ord_empty", .total_cents = 0 });

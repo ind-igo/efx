@@ -1,9 +1,9 @@
-const fx = @import("efx.zig");
+const efx = @import("efx.zig");
 
-pub const Effect = fx.Effect;
-pub const Op = fx.Op;
-pub const Scope = fx.Scope;
-pub const Slot = fx.Slot;
-pub const Contract = fx.Contract;
-pub const MAX_EFFECTS = fx.MAX_EFFECTS;
+pub const Effect = efx.Effect;
+pub const Op = efx.Op;
+pub const Scope = efx.Scope;
+pub const Slot = efx.Slot;
+pub const Contract = efx.Contract;
+pub const MAX_EFFECTS = efx.MAX_EFFECTS;
 

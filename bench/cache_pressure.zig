@@ -2,26 +2,26 @@
 /// Tests dispatch cost when alternating between many effects,
 /// forcing vtables to compete for cache lines.
 const std = @import("std");
-const fx = @import("fx");
+const efx = @import("efx");
 
 // ── 16 independent effects ──────────────────────────────────────────
 
-const E01 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E02 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E03 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E04 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E05 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E06 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E07 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E08 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E09 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E10 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E11 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E12 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E13 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E14 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E15 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
-const E16 = fx.Effect(union(enum) { op: fx.Op(u64, u64) });
+const E01 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E02 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E03 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E04 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E05 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E06 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E07 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E08 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E09 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E10 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E11 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E12 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E13 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E14 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E15 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
+const E16 = efx.Effect(union(enum) { op: efx.Op(u64, u64) });
 
 // ── Handler: same shape for all ─────────────────────────────────────
 
@@ -47,7 +47,7 @@ const H15 = MakeHandler(15); const H16 = MakeHandler(16);
 // ── Benchmarks ──────────────────────────────────────────────────────
 
 var bench_io: std.Io = undefined;
-var sc: *const fx.Scope = undefined;
+var sc: *const efx.Scope = undefined;
 
 const ITERS: u64 = 50_000_000;
 
@@ -151,7 +151,7 @@ pub fn main(init: std.process.Init) !void {
     var h09 = H09{}; var h10 = H10{}; var h11 = H11{}; var h12 = H12{};
     var h13 = H13{}; var h14 = H14{}; var h15 = H15{}; var h16 = H16{};
 
-    const scope = fx.Scope.init(.{
+    const scope = efx.Scope.init(.{
         .{ E01, &h01 }, .{ E02, &h02 }, .{ E03, &h03 }, .{ E04, &h04 },
         .{ E05, &h05 }, .{ E06, &h06 }, .{ E07, &h07 }, .{ E08, &h08 },
         .{ E09, &h09 }, .{ E10, &h10 }, .{ E11, &h11 }, .{ E12, &h12 },

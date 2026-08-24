@@ -3,21 +3,21 @@
 /// Demonstrates: same seed → same behavior, event tracing for debugging,
 /// and fault injection — all via effect handlers, zero changes to business logic.
 const std = @import("std");
-const fx = @import("efx");
+const efx = @import("efx");
 
 // ── Effects (reused from clock.zig / random.zig) ────────────────────
 
-pub const Clock = fx.Effect(union(enum) {
-    timestamp_ms: fx.Op(void, i64),
-    sleep_ms: fx.Op(u64, void),
+pub const Clock = efx.Effect(union(enum) {
+    timestamp_ms: efx.Op(void, i64),
+    sleep_ms: efx.Op(u64, void),
 });
 
 pub const Range = struct { min: u64, max: u64 };
 
-pub const Random = fx.Effect(union(enum) {
-    int_u64: fx.Op(void, u64),
-    range: fx.Op(Range, u64),
-    boolean: fx.Op(void, bool),
+pub const Random = efx.Effect(union(enum) {
+    int_u64: efx.Op(void, u64),
+    range: efx.Op(Range, u64),
+    boolean: efx.Op(void, bool),
 });
 
 // ── Event trace ─────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ pub const RetryResult = struct {
     elapsed_ms: i64,
 };
 
-fn retryWithJitter(sc: *const fx.Scope, max_attempts: u32, base_delay_ms: u64) RetryResult {
+fn retryWithJitter(sc: *const efx.Scope, max_attempts: u32, base_delay_ms: u64) RetryResult {
     const start = Clock.exec(sc, .timestamp_ms, {});
     var attempt: u32 = 0;
     while (attempt < max_attempts) : (attempt += 1) {
@@ -137,7 +137,7 @@ fn retryWithJitter(sc: *const fx.Scope, max_attempts: u32, base_delay_ms: u64) R
 
 fn runSim(seed: u64, allocator: std.mem.Allocator) struct { result: RetryResult, sim: Simulator } {
     var sim = Simulator.init(seed, allocator);
-    const sc = fx.Scope.init(.{
+    const sc = efx.Scope.init(.{
         .{ Clock, &sim },
         .{ Random, &sim },
     });
@@ -181,7 +181,7 @@ test "fault injection: always-fail operation exhausts retries" {
     defer sim.deinit();
     var fail_rng = AlwaysFailRandom{};
 
-    const sc = fx.Scope.init(.{
+    const sc = efx.Scope.init(.{
         .{ Clock, &sim },
         .{ Random, &fail_rng },
     });
@@ -209,7 +209,7 @@ pub fn main(init: std.process.Init) !void {
         var sim = Simulator.init(seed, allocator);
         defer sim.deinit();
 
-        const sc = fx.Scope.init(.{
+        const sc = efx.Scope.init(.{
             .{ Clock, &sim },
             .{ Random, &sim },
         });

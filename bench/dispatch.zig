@@ -1,16 +1,16 @@
 /// Dispatch overhead benchmark.
 /// Measures: effect dispatch vs direct fn call vs fn pointer call.
 const std = @import("std");
-const fx = @import("fx");
+const efx = @import("efx");
 
 // ── Minimal effects for benchmarking ────────────────────────────────
 
-const Counter = fx.Effect(union(enum) {
-    inc: fx.Op(u64, void),
+const Counter = efx.Effect(union(enum) {
+    inc: efx.Op(u64, void),
 });
 
-const Adder = fx.Effect(union(enum) {
-    add: fx.Op(u64, u64),
+const Adder = efx.Effect(union(enum) {
+    add: efx.Op(u64, u64),
 });
 
 // ── Handlers ────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ const ITERS: u64 = 100_000_000;
 const WARMUP: u64 = 10_000_000;
 
 var bench_io: std.Io = undefined;
-var bench_scope: *const fx.Scope = undefined;
+var bench_scope: *const efx.Scope = undefined;
 
 fn elapsedNs(start: std.Io.Timestamp) u64 {
     return @intCast(start.untilNow(bench_io, .awake).nanoseconds);
@@ -117,7 +117,7 @@ pub fn main(init: std.process.Init) !void {
 
     var counter = CounterHandler{};
     var adder = AdderHandler{};
-    const sc = fx.Scope.init(.{
+    const sc = efx.Scope.init(.{
         .{ Counter, &counter },
         .{ Adder, &adder },
     });

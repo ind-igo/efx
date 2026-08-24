@@ -1,12 +1,12 @@
 /// Clock effect example — wall clock in production, virtual time in tests.
 const std = @import("std");
-const fx = @import("efx");
+const efx = @import("efx");
 
 // ── Effect definition ────────────────────────────────────────────────
 
-pub const Clock = fx.Effect(union(enum) {
-    timestamp_ms: fx.Op(void, i64),
-    sleep_ms: fx.Op(u64, void),
+pub const Clock = efx.Effect(union(enum) {
+    timestamp_ms: efx.Op(void, i64),
+    sleep_ms: efx.Op(u64, void),
 });
 
 // ── Handlers ─────────────────────────────────────────────────────────
@@ -38,12 +38,12 @@ pub const VirtualHandler = struct {
 
 // ── Business logic ───────────────────────────────────────────────────
 
-fn isExpired(sc: *const fx.Scope, issued_ms: i64, ttl_ms: i64) bool {
+fn isExpired(sc: *const efx.Scope, issued_ms: i64, ttl_ms: i64) bool {
     const now = Clock.exec(sc, .timestamp_ms, {});
     return now - issued_ms >= ttl_ms;
 }
 
-fn waitUntil(sc: *const fx.Scope, deadline_ms: i64) void {
+fn waitUntil(sc: *const efx.Scope, deadline_ms: i64) void {
     while (Clock.exec(sc, .timestamp_ms, {}) < deadline_ms) {
         Clock.exec(sc, .sleep_ms, 100);
     }
@@ -53,7 +53,7 @@ fn waitUntil(sc: *const fx.Scope, deadline_ms: i64) void {
 
 pub fn main(init: std.process.Init) !void {
     var handler = SystemHandler{ .io = init.io };
-    const sc = fx.Scope.init(.{.{ Clock, &handler }});
+    const sc = efx.Scope.init(.{.{ Clock, &handler }});
 
     const now = Clock.exec(&sc, .timestamp_ms, {});
     std.debug.print("current time: {d}ms\n", .{now});
@@ -65,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
 
 test "isExpired with virtual clock" {
     var clock = VirtualHandler{ .now_ms = 1000 };
-    const sc = fx.Scope.init(.{.{ Clock, &clock }});
+    const sc = efx.Scope.init(.{.{ Clock, &clock }});
 
     try std.testing.expect(isExpired(&sc, 500, 400));
     try std.testing.expect(!isExpired(&sc, 500, 600));
@@ -73,7 +73,7 @@ test "isExpired with virtual clock" {
 
 test "waitUntil advances virtual time" {
     var clock = VirtualHandler{ .now_ms = 0 };
-    const sc = fx.Scope.init(.{.{ Clock, &clock }});
+    const sc = efx.Scope.init(.{.{ Clock, &clock }});
 
     waitUntil(&sc, 500);
 

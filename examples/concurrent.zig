@@ -1,27 +1,27 @@
 /// Concurrent effect propagation — fan out work across threads,
 /// each inheriting the caller's effect handlers via the Scope value.
 const std = @import("std");
-const fx = @import("efx");
+const efx = @import("efx");
 
 // ── Effects ─────────────────────────────────────────────────────────
 
-const Logger = fx.Effect(union(enum) {
-    info: fx.Op([]const u8, void),
+const Logger = efx.Effect(union(enum) {
+    info: efx.Op([]const u8, void),
 });
 
-const Metrics = fx.Effect(union(enum) {
-    inc: fx.Op([]const u8, void),
+const Metrics = efx.Effect(union(enum) {
+    inc: efx.Op([]const u8, void),
 });
 
 // ── Business logic: parallel workers ────────────────────────────────
 
-fn worker(sc: *const fx.Scope, id: []const u8) u64 {
+fn worker(sc: *const efx.Scope, id: []const u8) u64 {
     Logger.exec(sc, .info, id);
     Metrics.exec(sc, .inc, "tasks.completed");
     return 1;
 }
 
-fn fanOut(io: std.Io, sc: *const fx.Scope, tasks: []const []const u8) u64 {
+fn fanOut(io: std.Io, sc: *const efx.Scope, tasks: []const []const u8) u64 {
     var futures: [8]std.Io.Future(u64) = undefined;
     const n = @min(tasks.len, futures.len);
     var spawned: usize = 0;
@@ -62,7 +62,7 @@ const AtomicCounter = struct {
 pub fn main(init: std.process.Init) !void {
     var log = StderrLogger{};
     var met = AtomicCounter{};
-    const sc = fx.Scope.init(.{
+    const sc = efx.Scope.init(.{
         .{ Logger, &log },
         .{ Metrics, &met },
     });
@@ -102,7 +102,7 @@ const TestCounter = struct {
 test "worker uses effects from scope" {
     var log = TestLogger{};
     var met = TestCounter{};
-    const sc = fx.Scope.init(.{
+    const sc = efx.Scope.init(.{
         .{ Logger, &log },
         .{ Metrics, &met },
     });

@@ -4,17 +4,17 @@
 /// beyond ordinary dispatch. Call sites are identical for the pure
 /// array-backed handler and the suspending stream-backed handler.
 const std = @import("std");
-const fx = @import("efx");
+const efx = @import("efx");
 
 // ── Effect ──────────────────────────────────────────────────────────
 
-const Source = fx.Effect(union(enum) {
-    next: fx.Op(void, std.Io.Cancelable!?u64),
+const Source = efx.Effect(union(enum) {
+    next: efx.Op(void, std.Io.Cancelable!?u64),
 });
 
 // ── Business logic — has no idea where items come from ──────────────
 
-fn sumAll(sc: *const fx.Scope) std.Io.Cancelable!u64 {
+fn sumAll(sc: *const efx.Scope) std.Io.Cancelable!u64 {
     var total: u64 = 0;
     while (try Source.exec(sc, .next, {})) |item| total += item;
     return total;
@@ -61,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Same business logic, pure handler.
     var arr = ArraySource{ .items = &.{ 1, 2, 3, 4, 5 } };
-    const sc_array = fx.Scope.init(.{.{ Source, &arr }});
+    const sc_array = efx.Scope.init(.{.{ Source, &arr }});
     std.debug.print("array sum:  {d}\n", .{try sumAll(&sc_array)});
 
     // Same business logic, suspending handler fed by a concurrent producer.
@@ -71,7 +71,7 @@ pub fn main(init: std.process.Init) !void {
     defer producer.await(io);
 
     var stream = StreamSource{ .io = io, .queue = &queue };
-    const sc_stream = fx.Scope.init(.{.{ Source, &stream }});
+    const sc_stream = efx.Scope.init(.{.{ Source, &stream }});
     std.debug.print("stream sum: {d}\n", .{try sumAll(&sc_stream)});
 }
 
@@ -79,12 +79,12 @@ pub fn main(init: std.process.Init) !void {
 
 test "sumAll drains the source" {
     var arr = ArraySource{ .items = &.{ 10, 20, 30 } };
-    const sc = fx.Scope.init(.{.{ Source, &arr }});
+    const sc = efx.Scope.init(.{.{ Source, &arr }});
     try std.testing.expectEqual(@as(u64, 60), try sumAll(&sc));
 }
 
 test "empty source yields zero" {
     var arr = ArraySource{ .items = &.{} };
-    const sc = fx.Scope.init(.{.{ Source, &arr }});
+    const sc = efx.Scope.init(.{.{ Source, &arr }});
     try std.testing.expectEqual(@as(u64, 0), try sumAll(&sc));
 }

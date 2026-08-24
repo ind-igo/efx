@@ -25,8 +25,8 @@ pub const Slot = struct {
 /// Operation signature: `Op(ArgType, ReturnType)`.
 /// Use as a union variant payload inside the union passed to `Effect()`.
 ///
-///   fx.Op([]const u8, void)         — void-returning operation
-///   fx.Op([]const u8, ?[]const u8)  — operation with a return type
+///   efx.Op([]const u8, void)         — void-returning operation
+///   efx.Op([]const u8, ?[]const u8)  — operation with a return type
 pub fn Op(comptime Arg: type, comptime Result: type) type {
     return struct {
         pub const ArgType = Arg;
@@ -197,13 +197,13 @@ pub fn Contract(comptime effects: anytype) type {
 /// One-shot "abort" semantics on top of Zig error unions: a handler that
 /// wants to stop the computation and deliver a result to the scope's
 /// installer embeds an `Exit(T)`, calls `abort(value)`, and returns the
-/// resulting `error.FxAbort`. Business logic propagates it with `try`;
-/// the installation site catches `error.FxAbort` and reads `payload`.
+/// resulting `error.EfxAbort`. Business logic propagates it with `try`;
+/// the installation site catches `error.EfxAbort` and reads `payload`.
 ///
 /// Operations that may abort declare it in their result type:
-///   check: fx.Op(u64, error{FxAbort}!void)
+///   check: efx.Op(u64, error{EfxAbort}!void)
 ///
-/// Caveats: `error.FxAbort` is one shared error value, so `payload` is only
+/// Caveats: `error.EfxAbort` is one shared error value, so `payload` is only
 /// meaningful for the Exit embedded in the handler *you* installed — with
 /// multiple abort-capable handlers in a scope, check each one's payload.
 /// Reset `payload` to null before reusing a handler across runs.
@@ -213,9 +213,9 @@ pub fn Exit(comptime T: type) type {
     return struct {
         payload: ?T = null,
 
-        pub fn abort(self: *@This(), value: T) error{FxAbort} {
+        pub fn abort(self: *@This(), value: T) error{EfxAbort} {
             self.payload = value;
-            return error.FxAbort;
+            return error.EfxAbort;
         }
     };
 }
@@ -464,8 +464,8 @@ test "passed as parameter" {
     const sc = Scope.init(.{.{ TestLogger, &logger }});
 
     const S = struct {
-        fn doWork(fx: *const Scope) void {
-            TestLogger.exec(fx, .info, "from helper");
+        fn doWork(efx: *const Scope) void {
+            TestLogger.exec(efx, .info, "from helper");
         }
     };
 
@@ -480,8 +480,8 @@ test "cross-thread via pointer" {
     const sc = Scope.init(.{.{ TestLogger, &handler }});
 
     const thread = try std.Thread.spawn(.{}, struct {
-        fn run(fx: *const Scope) void {
-            TestLogger.exec(fx, .info, "from child thread");
+        fn run(efx: *const Scope) void {
+            TestLogger.exec(efx, .info, "from child thread");
         }
     }.run, .{&sc});
     thread.join();
@@ -613,20 +613,20 @@ const CountingMetricsHandler = struct {
 // ── Test: Exit delivers a payload to the installer ──────────────────
 
 const Budget = Effect(union(enum) {
-    spend: Op(u64, error{FxAbort}!void),
+    spend: Op(u64, error{EfxAbort}!void),
 });
 
 const BudgetHandler = struct {
     remaining: u64,
     exit: Exit(u64) = .{},
 
-    fn spend(self: *BudgetHandler, amount: u64) error{FxAbort}!void {
+    fn spend(self: *BudgetHandler, amount: u64) error{EfxAbort}!void {
         if (amount > self.remaining) return self.exit.abort(self.remaining);
         self.remaining -= amount;
     }
 };
 
-fn spendAll(sc: *const Scope, costs: []const u64) error{FxAbort}!usize {
+fn spendAll(sc: *const Scope, costs: []const u64) error{EfxAbort}!usize {
     for (costs) |cost| try Budget.exec(sc, .spend, cost);
     return costs.len;
 }
@@ -636,7 +636,7 @@ test "Exit delivers a payload to the installer" {
     const sc = Scope.init(.{.{ Budget, &budget }});
 
     const result = spendAll(&sc, &.{ 4, 3, 9, 1 });
-    try testing.expectError(error.FxAbort, result);
+    try testing.expectError(error.EfxAbort, result);
     try testing.expectEqual(@as(?u64, 3), budget.exit.payload);
 
     // A run that fits the budget completes normally.
