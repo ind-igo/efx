@@ -1,10 +1,10 @@
 /// One-shot suspension by composition — a handler that blocks on
 /// `std.Io.Queue` turns a plain tail-resumptive effect into a generator.
-/// The caller's coroutine stack is the continuation; libfx needs nothing
+/// The caller's coroutine stack is the continuation; efx needs nothing
 /// beyond ordinary dispatch. Call sites are identical for the pure
 /// array-backed handler and the suspending stream-backed handler.
 const std = @import("std");
-const fx = @import("fx");
+const fx = @import("efx");
 
 // ── Effect ──────────────────────────────────────────────────────────
 

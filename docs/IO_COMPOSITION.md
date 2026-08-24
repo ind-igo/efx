@@ -1,6 +1,6 @@
-# libfx + Io: One-Shot Effects by Composition
+# efx + Io: One-Shot Effects by Composition
 
-How libfx's tail-resumptive evidence passing composes with Zig 0.16's `std.Io`
+How efx's tail-resumptive evidence passing composes with Zig 0.16's `std.Io`
 to get one-shot effect semantics without building a continuation runtime.
 
 Working proof: `examples/generator.zig` (`zig build run-generator`).
@@ -14,7 +14,7 @@ Based on Daan Leijen's work:
 
 ## The Three Layers
 
-### Layer 1: Tail-resumptive (libfx core)
+### Layer 1: Tail-resumptive (efx core)
 
 The handler runs, returns a value, execution continues. No continuation
 captured. Isomorphic to a virtual method call.
@@ -69,7 +69,7 @@ one-shot.
 
 A real algebraic handler can discard the continuation and return a value to
 its installation point (exceptions, early exit). `exec` must return to the
-caller, so libfx maps this onto Zig's error unions: `fx.Exit(T)` carries a
+caller, so efx maps this onto Zig's error unions: `fx.Exit(T)` carries a
 payload, the handler returns `error.FxAbort`, business logic propagates it
 with `try`, and the installer catches it and reads the payload. See the
 "Exit delivers a payload to the installer" test in `src/fx.zig`.
@@ -77,9 +77,9 @@ with `try`, and the installer catches it and reads the payload. See the
 This is one-shot *abort* semantics built on unwinding Zig already has —
 not handler-directed control transfer in the general sense.
 
-## Evidence Passing: Leijen → libfx Mapping
+## Evidence Passing: Leijen → efx Mapping
 
-| Leijen (evidence passing)    | libfx                                  |
+| Leijen (evidence passing)    | efx                                  |
 |------------------------------|----------------------------------------|
 | Evidence vector `w`          | `Scope._slots[MAX_EFFECTS]`            |
 | Evidence entry `(m, ops)`    | `Slot { .state, .vtable }`             |
@@ -89,7 +89,7 @@ not handler-directed control transfer in the general sense.
 | Evidence threading           | Explicit `*const Scope` parameter      |
 | Handler frame push/pop       | `scope.bind` (value copy, lexical)     |
 
-Leijen passes evidence as a hidden parameter; libfx passes it explicitly,
+Leijen passes evidence as a hidden parameter; efx passes it explicitly,
 the same convention as `std.Io` and `Allocator`. Same semantics, visible
 plumbing.
 
@@ -107,7 +107,7 @@ The scope must outlive the task, same as any borrowed pointer.
 
 ## What Leijen Builds vs What We Reuse
 
-| Component                  | Leijen (libhandler, ~3000 LOC C) | libfx + Io             |
+| Component                  | Leijen (libhandler, ~3000 LOC C) | efx + Io             |
 |----------------------------|----------------------------------|------------------------|
 | Evidence vectors           | Custom                           | `Scope` (~60 LOC)      |
 | Handler stack              | Linked list of frames            | `bind` (value copy)    |
@@ -117,11 +117,11 @@ The scope must outlive the task, same as any borrowed pointer.
 | Stack copying (multi-shot) | Custom memcpy                    | Not supported          |
 | Abort to handler           | longjmp                          | `fx.Exit` + error union |
 
-Neither library knows about the other. libfx manages WHAT ambient context is
+Neither library knows about the other. efx manages WHAT ambient context is
 available (evidence); Io manages HOW concurrent work is scheduled
 (continuations). They compose because the layers are orthogonal.
 
-## Building a Runtime on libfx + Io
+## Building a Runtime on efx + Io
 
 The runtime is not a framework — it is a *wiring convention*. `main()` owns
 the `Io`, handlers own their slice of it, and business logic sees only
@@ -204,7 +204,7 @@ test {
 
 ### Runtime compatibility
 
-libfx composes against the `std.Io` *interface*, not a particular event
+efx composes against the `std.Io` *interface*, not a particular event
 loop. Anything that implements the `Io` vtable slots into the same handler
 pattern unchanged:
 

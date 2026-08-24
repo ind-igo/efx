@@ -1,7 +1,7 @@
 /// Concurrent effect propagation — fan out work across threads,
 /// each inheriting the caller's effect handlers via the Scope value.
 const std = @import("std");
-const fx = @import("fx");
+const fx = @import("efx");
 
 // ── Effects ─────────────────────────────────────────────────────────
 

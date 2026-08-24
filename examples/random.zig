@@ -1,6 +1,6 @@
 /// Random effect example — OS entropy in production, seeded PRNG in tests.
 const std = @import("std");
-const fx = @import("fx");
+const fx = @import("efx");
 
 // ── Effect definition ────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const libfx = b.addModule("fx", .{
+    const efx_mod = b.addModule("efx", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
 
     // Tests — core
     const test_step = b.step("test", "Run tests");
-    const core_tests = b.addTest(.{ .root_module = libfx });
+    const core_tests = b.addTest(.{ .root_module = efx_mod });
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
 
     // Examples — each is a standalone executable with its own tests
@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "fx", .module = libfx }},
+            .imports = &.{.{ .name = "efx", .module = efx_mod }},
         });
 
         const exe = b.addExecutable(.{ .name = name, .root_module = example_mod });
@@ -47,7 +47,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path(bm.file),
             .target = target,
             .optimize = .ReleaseFast,
-            .imports = &.{.{ .name = "fx", .module = libfx }},
+            .imports = &.{.{ .name = "efx", .module = efx_mod }},
         });
         const exe = b.addExecutable(.{ .name = bm.name, .root_module = mod });
         b.installArtifact(exe);

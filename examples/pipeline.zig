@@ -1,7 +1,7 @@
 /// Data-processing pipeline — validate → enrich → store.
 /// Four effects compose naturally; tests swap all handlers to deterministic versions.
 const std = @import("std");
-const fx = @import("fx");
+const fx = @import("efx");
 
 // ── Effects ────────────────────────────────────────────────────────
 

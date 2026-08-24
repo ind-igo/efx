@@ -1,7 +1,7 @@
 /// OpenTelemetry-style effect example.
 /// One effect captures tracing and metrics; handlers decide where records go.
 const std = @import("std");
-const fx = @import("fx");
+const fx = @import("efx");
 
 // Effect definition
 

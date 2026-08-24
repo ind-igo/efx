@@ -1,7 +1,7 @@
 .{
-    .name = .libfx,
+    .name = .efx,
     .version = "0.1.0",
-    .fingerprint = 0xfae4ffb93013e69e,
+    .fingerprint = 0xdc24e5f60ac2d697,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{},
     .paths = .{

@@ -1,4 +1,4 @@
-# libfx
+# efx
 
 Tail-resumptive algebraic effects for Zig. Write programs as sequences of abstract operations and plug in different implementations without changing the logic. Handlers are plain structs. Dispatch is zero-cost. Everything is explicit.
 
@@ -11,7 +11,7 @@ Effects are a compositional primitive that allows you to model any boundary wher
 - **Networking:** transport, DNS, cert store as effects. Test a protocol state machine with loopback buffers and a virtual clock. No sockets, no timing jitter.
 - **Concurrency:** pass `*const Scope` to spawned threads — no snapshots or restore calls needed. See `examples/concurrent.zig`.
 
-libfx follows the same pattern as Zig's `std.Io` — an explicit capability value passed through the call stack. Rather than creating a full algebraic effect system with continuations, libfx creates simple tail-resumptive effects designed to compose naturally with `std.Io` for full algebraic effects. This keeps it a focused ~250 line library.
+efx follows the same pattern as Zig's `std.Io` — an explicit capability value passed through the call stack. Rather than creating a full algebraic effect system with continuations, efx creates simple tail-resumptive effects designed to compose naturally with `std.Io` for full algebraic effects. This keeps it a focused ~250 line library.
 
 Inspired by [Effect.ts](https://effect.website) and algebraic effects research by Daan Leijen, specifically [Generalized Evidence Passing](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/) and [Implementing Algebraic Effects in C](https://www.microsoft.com/en-us/research/publication/implementing-algebraic-effects-c/).
 
@@ -19,7 +19,7 @@ Inspired by [Effect.ts](https://effect.website) and algebraic effects research b
 
 ```zig
 const std = @import("std");
-const fx = @import("fx");
+const fx = @import("efx");
 
 // Define an effect — a tagged union of operations
 const Logger = fx.Effect(union(enum) {
@@ -52,8 +52,8 @@ Add to your `build.zig.zon`:
 
 ```zig
 .dependencies = .{
-    .libfx = .{
-        .url = "https://github.com/user/libfx/archive/refs/tags/v0.1.0.tar.gz",
+    .efx = .{
+        .url = "https://github.com/user/efx/archive/refs/tags/v0.1.0.tar.gz",
         .hash = "...",
     },
 },
@@ -62,7 +62,7 @@ Add to your `build.zig.zon`:
 Then in `build.zig`:
 
 ```zig
-const fx = b.dependency("libfx", .{}).module("fx");
+const fx = b.dependency("efx", .{}).module("fx");
 exe.root_module.addImport("fx", fx);
 ```
 

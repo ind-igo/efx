@@ -4,8 +4,8 @@ const root = @import("root");
 
 // ── Configuration ─────────────────────────────────────────────────────
 
-pub const MAX_EFFECTS: usize = if (@hasDecl(root, "libfx_max_effects"))
-    root.libfx_max_effects
+pub const MAX_EFFECTS: usize = if (@hasDecl(root, "efx_max_effects"))
+    root.efx_max_effects
 else
     16;
 
@@ -130,9 +130,9 @@ pub fn Effect(comptime U: type) type {
             arg: fields[@intFromEnum(op)].type.ArgType,
         ) fields[@intFromEnum(op)].type.ResultType {
             const s = @atomicLoad(usize, &slot, .acquire);
-            if (s == UNASSIGNED) @panic("libfx: effect was never bound in any scope: " ++ @typeName(U));
+            if (s == UNASSIGNED) @panic("efx: effect was never bound in any scope: " ++ @typeName(U));
             const entry = sc._slots[s];
-            const opaque_vt = entry.vtable orelse @panic("libfx: no handler bound in this scope for " ++ @typeName(U));
+            const opaque_vt = entry.vtable orelse @panic("efx: no handler bound in this scope for " ++ @typeName(U));
             const vt: *const Vtable = @ptrCast(@alignCast(opaque_vt));
             const trampoline = @field(vt.*, fields[@intFromEnum(op)].name);
             return trampoline(entry.state, sc, arg);

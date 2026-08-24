@@ -1,4 +1,4 @@
-const fx = @import("fx.zig");
+const fx = @import("efx.zig");
 
 pub const Effect = fx.Effect;
 pub const Op = fx.Op;

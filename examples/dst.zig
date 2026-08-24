@@ -3,7 +3,7 @@
 /// Demonstrates: same seed → same behavior, event tracing for debugging,
 /// and fault injection — all via effect handlers, zero changes to business logic.
 const std = @import("std");
-const fx = @import("fx");
+const fx = @import("efx");
 
 // ── Effects (reused from clock.zig / random.zig) ────────────────────
 
