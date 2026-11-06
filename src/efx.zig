@@ -91,9 +91,7 @@ pub fn Effect(comptime U: type) type {
                     const has_arg = OpType.ArgType != void;
                     const base_params: usize = if (has_arg) 2 else 1;
 
-                    const wants_scope = if (MethodInfo.param_types.len == base_params + 1) true
-                        else if (MethodInfo.param_types.len == base_params) false
-                        else @compileError("Handler method '" ++ name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
+                    const wants_scope = if (MethodInfo.param_types.len == base_params + 1) true else if (MethodInfo.param_types.len == base_params) false else @compileError("Handler method '" ++ name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
 
                     if (MethodInfo.return_type != OpType.ResultType) {
                         @compileError("Handler method '" ++ name ++ "' on '" ++ @typeName(H) ++ "' has wrong return type");
@@ -103,11 +101,9 @@ pub fn Effect(comptime U: type) type {
                         fn call(opaque_ptr: *anyopaque, sc: *const Scope, arg: OpType.ArgType) OpType.ResultType {
                             const self: *H = @ptrCast(@alignCast(opaque_ptr));
                             if (wants_scope) {
-                                if (has_arg) return @field(H, name)(self, sc, arg)
-                                else return @field(H, name)(self, sc);
+                                if (has_arg) return @field(H, name)(self, sc, arg) else return @field(H, name)(self, sc);
                             } else {
-                                if (has_arg) return @field(H, name)(self, arg)
-                                else return @field(H, name)(self);
+                                if (has_arg) return @field(H, name)(self, arg) else return @field(H, name)(self);
                             }
                         }
                     };
@@ -124,14 +120,14 @@ pub fn Effect(comptime U: type) type {
         pub fn exec(
             sc: *const Scope,
             comptime op: std.meta.FieldEnum(U),
-            arg: op_types[@intFromEnum(op)].ArgType,
-        ) op_types[@intFromEnum(op)].ResultType {
+            arg: op_types[@backingInt(op)].ArgType,
+        ) op_types[@backingInt(op)].ResultType {
             const s = @atomicLoad(usize, &slot, .acquire);
             if (s == UNASSIGNED) @panic("efx: effect was never bound in any scope: " ++ @typeName(U));
             const entry = sc._slots[s];
             const opaque_vt = entry.vtable orelse @panic("efx: no handler bound in this scope for " ++ @typeName(U));
             const vt: *const Vtable = @ptrCast(@alignCast(opaque_vt));
-            const trampoline = @field(vt.*, op_names[@intFromEnum(op)]);
+            const trampoline = @field(vt.*, op_names[@backingInt(op)]);
             return trampoline(entry.state, sc, arg);
         }
     };
