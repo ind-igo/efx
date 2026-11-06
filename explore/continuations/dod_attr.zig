@@ -3,6 +3,7 @@ const efx = @import("efx");
 const dod = @import("dod.zig");
 const Store = efx.Effect(union(enum) { get: efx.Op(u64, error{Aborted}!u64) });
 const swap = @import("swap.zig");
+const baseline = @import("baseline.zig");
 
 fn Harness(comptime Swap: type) type {
     return struct {
@@ -50,7 +51,7 @@ fn bump(_: *anyopaque, keys: []const u64, out: []u64) void {
     for (keys, out) |k, *o| o.* = k +% 1;
 }
 
-const Old = Harness(swap.CallRet);
+const Old = Harness(baseline.CallRet);
 const New = Harness(swap.InlineBr);
 
 /// Park and resume through the whole pool: queue row, batch, ready list, switch pair.

@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
     // Every mode: stack switching can break only once registers are allocated
     // across it, which Debug never does.
     for (std.enums.values(std.builtin.OptimizeMode)) |mode| {
-        for ([_][]const u8{ "t", "dod_t" }) |name| {
+        for ([_][]const u8{ "t", "dod_t", "tiny_t" }) |name| {
             const mod = b.createModule(.{
                 .root_source_file = b.path(b.fmt("continuations/{s}.zig", .{name})),
                 .target = target,
@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    for ([_][]const u8{ "perf", "guard", "dod_perf", "dod_diag", "dod_attr", "switch" }) |name| {
+    for ([_][]const u8{ "perf", "guard", "dod_perf", "dod_diag", "dod_attr", "switch", "queue" }) |name| {
         const mod = b.createModule(.{
             .root_source_file = b.path(b.fmt("continuations/{s}.zig", .{name})),
             .target = target,

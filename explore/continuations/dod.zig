@@ -21,7 +21,7 @@ pub const Options = struct {
     colour_step: usize = 128,
     /// Prefetch the saved frame of the task this many resumes ahead. 0 = off.
     lookahead: usize = 8,
-    /// `Swap.swap(from, to)`. `InlineBr` predicts; `CallRet` is the baseline.
+    /// `Swap.swap(from, to)`. `baseline.CallRet` is the old one.
     Swap: type = swap.InlineBr,
 };
 
@@ -39,7 +39,7 @@ pub fn PoolWith(comptime capacity: u16, comptime stride: usize, comptime opts: O
         sp: [capacity]usize,
         reply: [capacity]u64,
         gen: [capacity]u16,
-        abort_bits: std.StaticBitSet(capacity),
+        aborted: [capacity]bool,
 
         // Warm: touched at spawn and finish.
         entry: [capacity]Entry,
@@ -73,7 +73,7 @@ pub fn PoolWith(comptime capacity: u16, comptime stride: usize, comptime opts: O
             );
             self.slab = slab;
             self.user = user;
-            self.abort_bits = .empty;
+            self.aborted = @splat(false);
             self.gen = @splat(0);
             self.free_len = capacity;
             self.ready_len = 0;
@@ -130,8 +130,8 @@ pub fn PoolWith(comptime capacity: u16, comptime stride: usize, comptime opts: O
             self.req_task[n] = .{ .index = i, .gen = self.gen[i] };
             self.req_len = n + 1;
             opts.Swap.swap(&self.sp[i], &self.scheduler_sp);
-            if (self.abort_bits.isSet(i)) {
-                self.abort_bits.unset(i);
+            if (self.aborted[i]) {
+                self.aborted[i] = false;
                 return error.Aborted;
             }
             return self.reply[i];
@@ -151,7 +151,7 @@ pub fn PoolWith(comptime capacity: u16, comptime stride: usize, comptime opts: O
         pub fn abort(self: *Self, k: Cont) error{StaleContinuation}!void {
             if (self.gen[k.index] != k.gen) return error.StaleContinuation;
             self.gen[k.index] +%= 1;
-            self.abort_bits.set(k.index);
+            self.aborted[k.index] = true;
             self.ready[self.ready_len] = k.index;
             self.ready_len += 1;
         }

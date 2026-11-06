@@ -50,7 +50,7 @@ const Base = Harness(.{ .colours = 1, .lookahead = 0 });
 const Colour = Harness(.{ .colours = 128, .lookahead = 0 });
 const Look = Harness(.{ .colours = 1, .lookahead = 8 });
 const Both = Harness(.{ .colours = 128, .lookahead = 8 });
-const Old = Harness(.{ .colours = 128, .lookahead = 8, .Swap = @import("swap.zig").CallRet });
+const Old = Harness(.{ .colours = 128, .lookahead = 8, .Swap = @import("baseline.zig").CallRet });
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;

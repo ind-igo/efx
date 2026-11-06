@@ -6,7 +6,7 @@
 const std = @import("std");
 
 const swap = @import("swap.zig");
-const CallRet = swap.CallRet;
+const CallRet = @import("baseline.zig").CallRet;
 const InlineBr = swap.InlineBr;
 const fabricate = swap.fabricate;
 
@@ -152,6 +152,39 @@ const InlineMin = struct {
     }
 };
 
+/// Three frames that save nothing: each caller spills only what is live.
+const Unsaved = struct {
+    pub const cc: std.lang.CallingConvention = .{ .aarch64_preserve_none = .{} };
+    var scheduler: usize = 0;
+    var fiber: usize = 0;
+    var stack: [64 * 1024]u8 align(16) = undefined;
+
+    fn down1(x: u64) callconv(cc) u64 {
+        InlineMin.swap(&fiber, &scheduler);
+        return x +% 1;
+    }
+    fn down2(x: u64) callconv(cc) u64 {
+        return @call(.never_inline, down1, .{x}) +% 1;
+    }
+    fn down3(x: u64) callconv(cc) u64 {
+        return @call(.never_inline, down2, .{x}) +% 1;
+    }
+
+    fn entry() callconv(.c) noreturn {
+        var x: u64 = 0;
+        while (true) x = @call(.never_inline, down3, .{x});
+    }
+
+    fn measure(io: std.Io, pairs: u64) f64 {
+        fiber = InlineMin.fabricateFrame(@intFromPtr(&stack) + stack.len, @intFromPtr(&entry));
+        const t0 = std.Io.Timestamp.now(io, .awake);
+        var i: u64 = 0;
+        while (i < pairs) : (i += 1) InlineMin.swap(&scheduler, &fiber);
+        const dt = t0.durationTo(std.Io.Timestamp.now(io, .awake)).nanoseconds;
+        return @as(f64, @floatFromInt(dt)) / @as(f64, @floatFromInt(pairs));
+    }
+};
+
 fn frameFor(comptime S: type, top: usize, entry: usize) usize {
     return if (@hasDecl(S, "fabricateFrame")) S.fabricateFrame(top, entry) else fabricate(top, entry);
 }
@@ -292,6 +325,11 @@ pub fn main(init: std.process.Init) !void {
         }
         std.debug.print("\n", .{});
     }
+
+    var unsaved: [5]f64 = undefined;
+    for (&unsaved) |*x| x.* = Unsaved.measure(io, 10_000_000);
+    std.mem.sort(f64, &unsaved, {}, std.sort.asc(f64));
+    std.debug.print("preserve_none, depth 3: {d:.1}\n", .{unsaved[2]});
 
     std.debug.print("\nn fibers, no queue; ns per park+resume\n{s:<11} {s:>7}", .{ "", "stride" });
     const counts = [_]usize{ 1, 16, 256, 4096 };
