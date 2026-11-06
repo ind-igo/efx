@@ -1,223 +1,179 @@
-/// Deterministic Simulation Testing (DST) example.
-///
-/// Demonstrates: same seed → same behavior, event tracing for debugging,
-/// and fault injection — all via effect handlers, zero changes to business logic.
+//! Deterministic simulation testing.
+//!
+//! Retry logic talks to an upstream service, a clock and a random source. In
+//! simulation one struct handles all three from a single seed, so every failure
+//! and delay is reproducible: a failing seed is a bug report you can replay.
 const std = @import("std");
 const efx = @import("efx");
 
-// ── Effects (reused from clock.zig / random.zig) ────────────────────
+// ── Effects ─────────────────────────────────────────────────────────
 
-pub const Clock = efx.Effect(union(enum) {
-    timestamp_ms: efx.Op(void, i64),
+const Upstream = efx.Effect(union(enum) {
+    call: efx.Op(void, error{Unavailable}!void),
+});
+
+const Clock = efx.Effect(union(enum) {
+    now_ms: efx.Op(void, i64),
     sleep_ms: efx.Op(u64, void),
 });
 
-pub const Range = struct { min: u64, max: u64 };
-
-pub const Random = efx.Effect(union(enum) {
-    int_u64: efx.Op(void, u64),
-    range: efx.Op(Range, u64),
-    boolean: efx.Op(void, bool),
+const Random = efx.Effect(union(enum) {
+    at_most: efx.Op(u64, u64),
 });
 
-// ── Event trace ─────────────────────────────────────────────────────
+// ── Business logic ──────────────────────────────────────────────────
 
-pub const Event = union(enum) {
-    timestamp_ms: i64,
-    sleep_ms: u64,
-    int_u64: u64,
-    range: struct { min: u64, max: u64, result: u64 },
-    boolean: bool,
-};
-
-pub const TraceEntry = struct {
-    time_ms: i64,
-    event: Event,
-};
-
-// ── Simulator ───────────────────────────────────────────────────────
-
-pub const Simulator = struct {
-    rng: std.Random.DefaultPrng,
-    now_ms: i64 = 0,
-    trace: std.ArrayList(TraceEntry),
-    allocator: std.mem.Allocator,
-
-    pub fn init(seed: u64, allocator: std.mem.Allocator) Simulator {
-        return .{
-            .rng = std.Random.DefaultPrng.init(seed),
-            .now_ms = 0,
-            .trace = .empty,
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *Simulator) void {
-        self.trace.deinit(self.allocator);
-    }
-
-    fn record(self: *Simulator, event: Event) void {
-        self.trace.append(self.allocator, .{ .time_ms = self.now_ms, .event = event }) catch {};
-    }
-
-    pub fn dump(self: *const Simulator) void {
-        std.debug.print("── trace ({d} events) ──\n", .{self.trace.items.len});
-        for (self.trace.items) |entry| {
-            std.debug.print("  [t={d}ms] ", .{entry.time_ms});
-            switch (entry.event) {
-                .timestamp_ms => |v| std.debug.print("clock.timestamp_ms -> {d}\n", .{v}),
-                .sleep_ms => |v| std.debug.print("clock.sleep_ms({d})\n", .{v}),
-                .int_u64 => |v| std.debug.print("random.int_u64 -> {d}\n", .{v}),
-                .range => |r| std.debug.print("random.range({d}..{d}) -> {d}\n", .{ r.min, r.max, r.result }),
-                .boolean => |v| std.debug.print("random.boolean -> {}\n", .{v}),
-            }
-        }
-        std.debug.print("── end trace ──\n", .{});
-    }
-
-    pub fn timestamp_ms(self: *Simulator) i64 {
-        self.record(.{ .timestamp_ms = self.now_ms });
-        return self.now_ms;
-    }
-
-    pub fn sleep_ms(self: *Simulator, ms: u64) void {
-        self.record(.{ .sleep_ms = ms });
-        self.now_ms += @intCast(ms);
-    }
-
-    pub fn int_u64(self: *Simulator) u64 {
-        const v = self.rng.random().int(u64);
-        self.record(.{ .int_u64 = v });
-        return v;
-    }
-
-    pub fn range(self: *Simulator, r: Range) u64 {
-        const v = self.rng.random().intRangeAtMost(u64, r.min, r.max);
-        self.record(.{ .range = .{ .min = r.min, .max = r.max, .result = v } });
-        return v;
-    }
-
-    pub fn boolean(self: *Simulator) bool {
-        const v = self.rng.random().boolean();
-        self.record(.{ .boolean = v });
-        return v;
-    }
-};
-
-// ── Business logic: retry with random jitter ────────────────────────
-
-pub const RetryResult = struct {
+const RetryResult = struct {
     succeeded: bool,
     attempts: u32,
     elapsed_ms: i64,
 };
 
-fn retryWithJitter(sc: *const efx.Scope, max_attempts: u32, base_delay_ms: u64) RetryResult {
-    const start = Clock.exec(sc, .timestamp_ms, {});
-    var attempt: u32 = 0;
-    while (attempt < max_attempts) : (attempt += 1) {
-        if (Random.exec(sc, .boolean, {})) {
+fn callWithRetry(sc: *const efx.Scope, max_attempts: u32, base_delay_ms: u64) RetryResult {
+    const start = Clock.exec(sc, .now_ms, {});
+    var attempt: u32 = 1;
+    while (true) : (attempt += 1) {
+        const succeeded = if (Upstream.exec(sc, .call, {})) true else |_| false;
+        if (succeeded or attempt == max_attempts) {
             return .{
-                .succeeded = true,
-                .attempts = attempt + 1,
-                .elapsed_ms = Clock.exec(sc, .timestamp_ms, {}) - start,
+                .succeeded = succeeded,
+                .attempts = attempt,
+                .elapsed_ms = Clock.exec(sc, .now_ms, {}) - start,
             };
         }
-        const jitter = Random.exec(sc, .range, .{ .min = 0, .max = base_delay_ms });
-        Clock.exec(sc, .sleep_ms, base_delay_ms + jitter);
+        Clock.exec(sc, .sleep_ms, base_delay_ms + Random.exec(sc, .at_most, base_delay_ms));
     }
-    return .{
-        .succeeded = false,
-        .attempts = max_attempts,
-        .elapsed_ms = Clock.exec(sc, .timestamp_ms, {}) - start,
-    };
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────
+// ── Simulator ───────────────────────────────────────────────────────
 
-fn runSim(seed: u64, allocator: std.mem.Allocator) struct { result: RetryResult, sim: Simulator } {
-    var sim = Simulator.init(seed, allocator);
-    const sc = efx.Scope.init(.{
-        .{ Clock, &sim },
-        .{ Random, &sim },
-    });
-    const result = retryWithJitter(&sc, 5, 200);
-    return .{ .result = result, .sim = sim };
-}
+const Event = union(enum) {
+    now_ms,
+    sleep_ms: u64,
+    at_most: u64,
+    call: bool,
+};
+
+const TraceEntry = struct {
+    time_ms: i64,
+    event: Event,
+};
+
+/// Handles all three effects, so they share one seed and one trace.
+const Simulator = struct {
+    rng: std.Random.DefaultPrng,
+    failure_percent: u8 = 60,
+    now: i64 = 0,
+    trace: [64]TraceEntry = undefined,
+    trace_len: usize = 0,
+
+    fn init(seed: u64) Simulator {
+        return .{ .rng = .init(seed) };
+    }
+
+    fn events(self: *const Simulator) []const TraceEntry {
+        return self.trace[0..self.trace_len];
+    }
+
+    fn record(self: *Simulator, event: Event) void {
+        self.trace[self.trace_len] = .{ .time_ms = self.now, .event = event };
+        self.trace_len += 1;
+    }
+
+    pub fn call(self: *Simulator) error{Unavailable}!void {
+        const up = self.rng.random().uintLessThan(u8, 100) >= self.failure_percent;
+        self.record(.{ .call = up });
+        if (!up) return error.Unavailable;
+    }
+
+    pub fn now_ms(self: *Simulator) i64 {
+        self.record(.now_ms);
+        return self.now;
+    }
+
+    pub fn sleep_ms(self: *Simulator, ms: u64) void {
+        self.record(.{ .sleep_ms = ms });
+        self.now += @intCast(ms);
+    }
+
+    pub fn at_most(self: *Simulator, max: u64) u64 {
+        const value = self.rng.random().intRangeAtMost(u64, 0, max);
+        self.record(.{ .at_most = value });
+        return value;
+    }
+
+    fn scope(self: *Simulator) efx.Scope {
+        return .init(.{ .{ Upstream, self }, .{ Clock, self }, .{ Random, self } });
+    }
+};
+
+const Outage = struct {
+    pub fn call(_: *Outage) error{Unavailable}!void {
+        return error.Unavailable;
+    }
+};
 
 // ── Tests ───────────────────────────────────────────────────────────
 
-test "same seed → identical results" {
-    var run1 = runSim(42, std.testing.allocator);
-    defer run1.sim.deinit();
-    var run2 = runSim(42, std.testing.allocator);
-    defer run2.sim.deinit();
+const sim_attempts = 5;
+const sim_delay_ms = 200;
 
-    try std.testing.expectEqual(run1.result.succeeded, run2.result.succeeded);
-    try std.testing.expectEqual(run1.result.attempts, run2.result.attempts);
-    try std.testing.expectEqual(run1.result.elapsed_ms, run2.result.elapsed_ms);
-    try std.testing.expectEqual(run1.sim.trace.items.len, run2.sim.trace.items.len);
+test "same seed replays the exact trace" {
+    var first = Simulator.init(42);
+    var second = Simulator.init(42);
+    const first_scope = first.scope();
+    const second_scope = second.scope();
+
+    const a = callWithRetry(&first_scope, sim_attempts, sim_delay_ms);
+    const b = callWithRetry(&second_scope, sim_attempts, sim_delay_ms);
+
+    try std.testing.expectEqual(a, b);
+    try std.testing.expectEqualSlices(TraceEntry, first.events(), second.events());
 }
 
-test "different seeds diverge" {
-    var run1 = runSim(42, std.testing.allocator);
-    defer run1.sim.deinit();
-    var run2 = runSim(123, std.testing.allocator);
-    defer run2.sim.deinit();
+test "retry bounds hold across many seeds" {
+    var failures: u32 = 0;
+    for (0..1000) |seed| {
+        var sim = Simulator.init(seed);
+        const sc = sim.scope();
+        const result = callWithRetry(&sc, sim_attempts, sim_delay_ms);
 
-    const diverged = run1.result.attempts != run2.result.attempts or
-        run1.result.elapsed_ms != run2.result.elapsed_ms;
-    try std.testing.expect(diverged);
+        const sleeps: i64 = result.attempts - 1;
+        try std.testing.expect(result.attempts >= 1 and result.attempts <= sim_attempts);
+        try std.testing.expect(result.elapsed_ms >= sleeps * sim_delay_ms);
+        try std.testing.expect(result.elapsed_ms <= sleeps * 2 * sim_delay_ms);
+        if (!result.succeeded) failures += 1;
+    }
+    // Both outcomes must occur, or the sweep isn't exercising the retry path.
+    try std.testing.expect(failures > 0 and failures < 1000);
 }
 
-test "trace captures every effect call" {
-    var run = runSim(42, std.testing.allocator);
-    defer run.sim.deinit();
-    try std.testing.expect(run.sim.trace.items.len > 0);
-}
+test "fault injection: a full outage exhausts retries without a trailing sleep" {
+    var sim = Simulator.init(7);
+    var outage = Outage{};
+    const base = sim.scope();
+    const sc = base.bind(Upstream, &outage);
 
-test "fault injection: always-fail operation exhausts retries" {
-    var sim = Simulator.init(0, std.testing.allocator);
-    defer sim.deinit();
-    var fail_rng = AlwaysFailRandom{};
-
-    const sc = efx.Scope.init(.{
-        .{ Clock, &sim },
-        .{ Random, &fail_rng },
-    });
-
-    const result = retryWithJitter(&sc, 3, 100);
+    const result = callWithRetry(&sc, 3, 100);
 
     try std.testing.expect(!result.succeeded);
     try std.testing.expectEqual(@as(u32, 3), result.attempts);
-    try std.testing.expectEqual(@as(i64, 300), result.elapsed_ms);
+    try std.testing.expect(result.elapsed_ms >= 200 and result.elapsed_ms <= 400);
 }
 
-const AlwaysFailRandom = struct {
-    pub fn int_u64(_: *AlwaysFailRandom) u64 { return 0; }
-    pub fn range(_: *AlwaysFailRandom, r: Range) u64 { return r.min; }
-    pub fn boolean(_: *AlwaysFailRandom) bool { return false; }
-};
+// ── Main: run a few seeds, print each trace ─────────────────────────
 
-// ── Main: run a few seeds, print results ────────────────────────────
+pub fn main(_: std.process.Init) !void {
+    for ([_]u64{ 42, 123, 999, 7, 31415 }) |seed| {
+        var sim = Simulator.init(seed);
+        const sc = sim.scope();
+        const result = callWithRetry(&sc, sim_attempts, sim_delay_ms);
 
-pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
-    const seeds = [_]u64{ 42, 123, 999, 7, 31415 };
-
-    for (seeds) |seed| {
-        var sim = Simulator.init(seed, allocator);
-        defer sim.deinit();
-
-        const sc = efx.Scope.init(.{
-            .{ Clock, &sim },
-            .{ Random, &sim },
-        });
-
-        const result = retryWithJitter(&sc, 5, 200);
-        std.debug.print("seed={d:<6} succeeded={} attempts={d} elapsed={d}ms\n", .{
+        std.debug.print("seed={d} succeeded={} attempts={d} elapsed={d}ms\n", .{
             seed, result.succeeded, result.attempts, result.elapsed_ms,
         });
-        sim.dump();
+        for (sim.events()) |entry| {
+            std.debug.print("  t={d}ms {any}\n", .{ entry.time_ms, entry.event });
+        }
     }
 }

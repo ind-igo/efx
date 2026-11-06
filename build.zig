@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
 
     // Examples — each is a standalone executable with its own tests
-    const examples = [_][]const u8{ "logger", "clock", "random", "dst", "pipeline", "concurrent", "otel", "generator" };
+    const examples = [_][]const u8{ "logger", "clock", "dst", "storage", "concurrent", "tracing", "generator", "batch" };
 
     for (examples) |name| {
         const example_mod = b.createModule(.{
@@ -36,21 +36,46 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&b.addRunArtifact(example_tests).step);
     }
 
-    // Benchmarks
-    const benches = [_]struct { name: []const u8, file: []const u8 }{
-        .{ .name = "bench-dispatch", .file = "bench/dispatch.zig" },
-        .{ .name = "bench-cache", .file = "bench/cache_pressure.zig" },
-    };
-    const bench_step = b.step("bench", "Run all benchmarks");
-    for (benches) |bm| {
+    // Missing-handler panics, in every build mode. They end the process, so
+    // they are checked from outside it.
+    for (std.enums.values(std.builtin.OptimizeMode)) |mode| {
         const mod = b.createModule(.{
-            .root_source_file = b.path(bm.file),
+            .root_source_file = b.path("tests/unbound_panic.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = mode,
             .imports = &.{.{ .name = "efx", .module = efx_mod }},
         });
-        const exe = b.addExecutable(.{ .name = bm.name, .root_module = mod });
+        const exe = b.addExecutable(.{ .name = "unbound-panic", .root_module = mod });
+        for ([_][]const u8{ "never", "elsewhere" }, [_][]const u8{
+            "efx: effect was never bound in any scope: unbound_panic.NeverBound",
+            "efx: no handler bound in this scope for unbound_panic.BoundElsewhere",
+        }) |case, message| {
+            const run = b.addRunArtifact(exe);
+            run.addArg(case);
+            run.expectStdErrMatch(message);
+            run.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
+            test_step.dependOn(&run.step);
+        }
+    }
+
+    // Benchmarks: `zig build bench` runs one quick pass as raw CSV.
+    // bench/run.sh collects the numbers in the README.
+    const bench_step = b.step("bench", "Run a quick benchmark pass");
+    for ([_]bool{ false, true }) |omit_frame_pointer| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path("bench/dispatch.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .omit_frame_pointer = omit_frame_pointer,
+            .imports = &.{.{ .name = "efx", .module = efx_mod }},
+        });
+        const name = if (omit_frame_pointer) "bench-dispatch-nofp" else "bench-dispatch";
+        const exe = b.addExecutable(.{ .name = name, .root_module = mod });
         b.installArtifact(exe);
-        bench_step.dependOn(&b.addRunArtifact(exe).step);
+        if (!omit_frame_pointer) {
+            const run = b.addRunArtifact(exe);
+            run.addArgs(&.{ "shuf", "1", "mono", "1" });
+            bench_step.dependOn(&run.step);
+        }
     }
 }

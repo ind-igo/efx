@@ -1,4 +1,4 @@
-/// Logger effect example — stderr, JSON, and test handlers for the same effect.
+//! Logger effect example — stderr, JSON, and test handlers for the same effect.
 const std = @import("std");
 const efx = @import("efx");
 
@@ -28,15 +28,19 @@ pub const StderrHandler = struct {
 
 pub const JsonHandler = struct {
     pub fn info(_: *JsonHandler, msg: []const u8) void {
-        std.debug.print("{{\"level\":\"info\",\"msg\":\"{s}\"}}\n", .{msg});
+        print("info", msg);
     }
 
     pub fn warn(_: *JsonHandler, msg: []const u8) void {
-        std.debug.print("{{\"level\":\"warn\",\"msg\":\"{s}\"}}\n", .{msg});
+        print("warn", msg);
     }
 
     pub fn err(_: *JsonHandler, msg: []const u8) void {
-        std.debug.print("{{\"level\":\"err\",\"msg\":\"{s}\"}}\n", .{msg});
+        print("err", msg);
+    }
+
+    fn print(level: []const u8, msg: []const u8) void {
+        std.debug.print("{{\"level\":\"{s}\",\"msg\":{f}}}\n", .{ level, std.json.fmt(msg, .{}) });
     }
 };
 
@@ -51,9 +55,15 @@ pub const TestHandler = struct {
         }
     }
 
-    pub fn info(self: *TestHandler, msg: []const u8) void { self.push(msg); }
-    pub fn warn(self: *TestHandler, msg: []const u8) void { self.push(msg); }
-    pub fn err(self: *TestHandler, msg: []const u8) void { self.push(msg); }
+    pub fn info(self: *TestHandler, msg: []const u8) void {
+        self.push(msg);
+    }
+    pub fn warn(self: *TestHandler, msg: []const u8) void {
+        self.push(msg);
+    }
+    pub fn err(self: *TestHandler, msg: []const u8) void {
+        self.push(msg);
+    }
 
     pub fn slice(self: *const TestHandler) []const []const u8 {
         return self.buf[0..self.len];

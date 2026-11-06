@@ -44,19 +44,17 @@ fn isOpType(comptime T: type) bool {
 
 pub fn Effect(comptime U: type) type {
     const union_info = @typeInfo(U).@"union";
-    const fields = union_info.fields;
+    const op_names = union_info.field_names;
+    const op_types = union_info.field_types;
 
     const Vtable = comptime blk: {
-        var field_names: [fields.len][:0]const u8 = undefined;
-        var field_types: [fields.len]type = undefined;
-        for (fields, 0..) |field, i| {
-            const OpType = field.type;
+        var fn_types: [op_names.len]type = undefined;
+        for (op_names, op_types, 0..) |name, OpType, i| {
             if (!isOpType(OpType))
-                @compileError("Effect union variant '" ++ field.name ++ "' must have an Op(...) payload");
-            field_names[i] = field.name;
-            field_types[i] = *const fn (*anyopaque, *const Scope, OpType.ArgType) OpType.ResultType;
+                @compileError("Effect union variant '" ++ name ++ "' must have an Op(...) payload");
+            fn_types[i] = *const fn (*anyopaque, *const Scope, OpType.ArgType) OpType.ResultType;
         }
-        break :blk @Struct(.auto, null, &field_names, &field_types, &@splat(.{}));
+        break :blk @Struct(.auto, null, op_names, &fn_types, &@splat(.{}));
     };
 
     return struct {
@@ -84,37 +82,36 @@ pub fn Effect(comptime U: type) type {
         pub fn makeVtable(comptime H: type) *const Vtable {
             const vtable = comptime blk: {
                 var vt: Vtable = undefined;
-                for (fields) |field| {
-                    const OpType = field.type;
-                    if (!@hasDecl(H, field.name)) {
-                        @compileError("Handler '" ++ @typeName(H) ++ "' is missing method '" ++ field.name ++ "'");
+                for (op_names, op_types) |name, OpType| {
+                    if (!@hasDecl(H, name)) {
+                        @compileError("Handler '" ++ @typeName(H) ++ "' is missing method '" ++ name ++ "'");
                     }
-                    const method = @field(H, field.name);
+                    const method = @field(H, name);
                     const MethodInfo = @typeInfo(@TypeOf(method)).@"fn";
                     const has_arg = OpType.ArgType != void;
                     const base_params: usize = if (has_arg) 2 else 1;
 
-                    const wants_scope = if (MethodInfo.params.len == base_params + 1) true
-                        else if (MethodInfo.params.len == base_params) false
-                        else @compileError("Handler method '" ++ field.name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
+                    const wants_scope = if (MethodInfo.param_types.len == base_params + 1) true
+                        else if (MethodInfo.param_types.len == base_params) false
+                        else @compileError("Handler method '" ++ name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
 
                     if (MethodInfo.return_type != OpType.ResultType) {
-                        @compileError("Handler method '" ++ field.name ++ "' on '" ++ @typeName(H) ++ "' has wrong return type");
+                        @compileError("Handler method '" ++ name ++ "' on '" ++ @typeName(H) ++ "' has wrong return type");
                     }
 
                     const trampoline = struct {
                         fn call(opaque_ptr: *anyopaque, sc: *const Scope, arg: OpType.ArgType) OpType.ResultType {
                             const self: *H = @ptrCast(@alignCast(opaque_ptr));
                             if (wants_scope) {
-                                if (has_arg) return @field(H, field.name)(self, sc, arg)
-                                else return @field(H, field.name)(self, sc);
+                                if (has_arg) return @field(H, name)(self, sc, arg)
+                                else return @field(H, name)(self, sc);
                             } else {
-                                if (has_arg) return @field(H, field.name)(self, arg)
-                                else return @field(H, field.name)(self);
+                                if (has_arg) return @field(H, name)(self, arg)
+                                else return @field(H, name)(self);
                             }
                         }
                     };
-                    @field(vt, field.name) = &trampoline.call;
+                    @field(vt, name) = &trampoline.call;
                 }
                 break :blk vt;
             };
@@ -127,14 +124,14 @@ pub fn Effect(comptime U: type) type {
         pub fn exec(
             sc: *const Scope,
             comptime op: std.meta.FieldEnum(U),
-            arg: fields[@intFromEnum(op)].type.ArgType,
-        ) fields[@intFromEnum(op)].type.ResultType {
+            arg: op_types[@intFromEnum(op)].ArgType,
+        ) op_types[@intFromEnum(op)].ResultType {
             const s = @atomicLoad(usize, &slot, .acquire);
             if (s == UNASSIGNED) @panic("efx: effect was never bound in any scope: " ++ @typeName(U));
             const entry = sc._slots[s];
             const opaque_vt = entry.vtable orelse @panic("efx: no handler bound in this scope for " ++ @typeName(U));
             const vt: *const Vtable = @ptrCast(@alignCast(opaque_vt));
-            const trampoline = @field(vt.*, fields[@intFromEnum(op)].name);
+            const trampoline = @field(vt.*, op_names[@intFromEnum(op)]);
             return trampoline(entry.state, sc, arg);
         }
     };
@@ -180,12 +177,9 @@ pub fn Contract(comptime effects: anytype) type {
         }
 
         fn pairsProvide(comptime Pairs: type, comptime E: type) bool {
-            for (@typeInfo(Pairs).@"struct".fields) |f| {
-                const inner = @typeInfo(f.type).@"struct".fields;
-                if (inner[0].is_comptime) {
-                    const ptr: *const type = @ptrCast(@alignCast(inner[0].default_value_ptr.?));
-                    if (ptr.* == E) return true;
-                }
+            for (@typeInfo(Pairs).@"struct".field_types) |Pair| {
+                const attrs = @typeInfo(Pair).@"struct".field_attrs[0];
+                if (attrs.@"comptime" and attrs.defaultValue(type).? == E) return true;
             }
             return false;
         }
@@ -225,7 +219,7 @@ pub fn Exit(comptime T: type) type {
 fn HandlerType(comptime PtrType: type) type {
     const info = @typeInfo(PtrType);
     if (info != .pointer) @compileError("Expected pointer to handler struct");
-    if (info.pointer.is_const) @compileError("Handler must be a mutable pointer (*T), not *const T — declare handler with 'var'");
+    if (info.pointer.attrs.@"const") @compileError("Handler must be a mutable pointer (*T), not *const T — declare handler with 'var'");
     return info.pointer.child;
 }
 
@@ -245,11 +239,11 @@ const TestConfig = Effect(union(enum) {
 const StderrLoggerHandler = struct {
     call_count: usize = 0,
 
-    fn info(self: *StderrLoggerHandler, _: []const u8) void {
+    pub fn info(self: *StderrLoggerHandler, _: []const u8) void {
         self.call_count += 1;
     }
 
-    fn err(self: *StderrLoggerHandler, _: []const u8) void {
+    pub fn err(self: *StderrLoggerHandler, _: []const u8) void {
         self.call_count += 1;
     }
 };
@@ -257,11 +251,11 @@ const StderrLoggerHandler = struct {
 const AltLoggerHandler = struct {
     call_count: usize = 0,
 
-    fn info(self: *AltLoggerHandler, _: []const u8) void {
+    pub fn info(self: *AltLoggerHandler, _: []const u8) void {
         self.call_count += 1;
     }
 
-    fn err(self: *AltLoggerHandler, _: []const u8) void {
+    pub fn err(self: *AltLoggerHandler, _: []const u8) void {
         self.call_count += 1;
     }
 };
@@ -269,7 +263,7 @@ const AltLoggerHandler = struct {
 const MapConfigHandler = struct {
     value: ?[]const u8 = null,
 
-    fn get(self: *MapConfigHandler, _: []const u8) ?[]const u8 {
+    pub fn get(self: *MapConfigHandler, _: []const u8) ?[]const u8 {
         return self.value;
     }
 };
@@ -333,7 +327,7 @@ const TestFallible = Effect(union(enum) {
 const FallibleHandler = struct {
     should_fail: bool = false,
 
-    fn check(self: *FallibleHandler, _: []const u8) anyerror!bool {
+    pub fn check(self: *FallibleHandler, _: []const u8) anyerror!bool {
         if (self.should_fail) return error.TestFailure;
         return true;
     }
@@ -360,7 +354,7 @@ const TestClock = Effect(union(enum) {
 const FixedClockHandler = struct {
     time: i64 = 1000,
 
-    fn now(self: *FixedClockHandler) i64 {
+    pub fn now(self: *FixedClockHandler) i64 {
         return self.time;
     }
 };
@@ -436,11 +430,11 @@ const MultiOpHandler = struct {
     info_count: usize = 0,
     err_count: usize = 0,
 
-    fn info(self: *MultiOpHandler, _: []const u8) void {
+    pub fn info(self: *MultiOpHandler, _: []const u8) void {
         self.info_count += 1;
     }
 
-    fn err(self: *MultiOpHandler, _: []const u8) void {
+    pub fn err(self: *MultiOpHandler, _: []const u8) void {
         self.err_count += 1;
     }
 };
@@ -507,7 +501,7 @@ const SetOnlyEffect = Effect(union(enum) {
 });
 
 const SetOnlyHandler = struct {
-    fn ping(_: *SetOnlyHandler) u32 {
+    pub fn ping(_: *SetOnlyHandler) u32 {
         return 99;
     }
 };
@@ -532,13 +526,13 @@ const CrossEffectCounter = Effect(union(enum) {
 
 const CounterHandler = struct {
     count: usize = 0,
-    fn inc(self: *CounterHandler) void {
+    pub fn inc(self: *CounterHandler) void {
         self.count += 1;
     }
 };
 
 const CrossCallingHandler = struct {
-    fn log_and_count(self: *CrossCallingHandler, sc: *const Scope, _: []const u8) void {
+    pub fn log_and_count(self: *CrossCallingHandler, sc: *const Scope, _: []const u8) void {
         _ = self;
         CrossEffectCounter.exec(sc, .inc, {});
     }
@@ -599,13 +593,13 @@ const OptionalMetrics = Effect(union(enum) {
 });
 
 const NoopMetricsHandler = struct {
-    fn inc(_: *NoopMetricsHandler, _: []const u8) void {}
+    pub fn inc(_: *NoopMetricsHandler, _: []const u8) void {}
 };
 
 const CountingMetricsHandler = struct {
     count: usize = 0,
 
-    fn inc(self: *CountingMetricsHandler, _: []const u8) void {
+    pub fn inc(self: *CountingMetricsHandler, _: []const u8) void {
         self.count += 1;
     }
 };
@@ -620,7 +614,7 @@ const BudgetHandler = struct {
     remaining: u64,
     exit: Exit(u64) = .{},
 
-    fn spend(self: *BudgetHandler, amount: u64) error{EfxAbort}!void {
+    pub fn spend(self: *BudgetHandler, amount: u64) error{EfxAbort}!void {
         if (amount > self.remaining) return self.exit.abort(self.remaining);
         self.remaining -= amount;
     }

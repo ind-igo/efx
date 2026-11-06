@@ -1,4 +1,4 @@
-/// Clock effect example — wall clock in production, virtual time in tests.
+//! Clock effect example — wall clock in production, virtual time in tests.
 const std = @import("std");
 const efx = @import("efx");
 
@@ -6,7 +6,7 @@ const efx = @import("efx");
 
 pub const Clock = efx.Effect(union(enum) {
     timestamp_ms: efx.Op(void, i64),
-    sleep_ms: efx.Op(u64, void),
+    sleep_ms: efx.Op(u64, std.Io.Cancelable!void),
 });
 
 // ── Handlers ─────────────────────────────────────────────────────────
@@ -18,9 +18,9 @@ pub const SystemHandler = struct {
         return std.Io.Clock.Timestamp.now(self.io, .real).raw.toMilliseconds();
     }
 
-    pub fn sleep_ms(self: *SystemHandler, ms: u64) void {
+    pub fn sleep_ms(self: *SystemHandler, ms: u64) std.Io.Cancelable!void {
         const duration: std.Io.Duration = .fromMilliseconds(@intCast(ms));
-        self.io.sleep(duration, .awake) catch {};
+        return self.io.sleep(duration, .awake);
     }
 };
 
@@ -31,7 +31,7 @@ pub const VirtualHandler = struct {
         return self.now_ms;
     }
 
-    pub fn sleep_ms(self: *VirtualHandler, ms: u64) void {
+    pub fn sleep_ms(self: *VirtualHandler, ms: u64) std.Io.Cancelable!void {
         self.now_ms += @intCast(ms);
     }
 };
@@ -43,9 +43,9 @@ fn isExpired(sc: *const efx.Scope, issued_ms: i64, ttl_ms: i64) bool {
     return now - issued_ms >= ttl_ms;
 }
 
-fn waitUntil(sc: *const efx.Scope, deadline_ms: i64) void {
+fn waitUntil(sc: *const efx.Scope, deadline_ms: i64) std.Io.Cancelable!void {
     while (Clock.exec(sc, .timestamp_ms, {}) < deadline_ms) {
-        Clock.exec(sc, .sleep_ms, 100);
+        try Clock.exec(sc, .sleep_ms, 100);
     }
 }
 
@@ -75,7 +75,7 @@ test "waitUntil advances virtual time" {
     var clock = VirtualHandler{ .now_ms = 0 };
     const sc = efx.Scope.init(.{.{ Clock, &clock }});
 
-    waitUntil(&sc, 500);
+    try waitUntil(&sc, 500);
 
     try std.testing.expectEqual(@as(i64, 500), clock.now_ms);
 }

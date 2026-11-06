@@ -1,8 +1,12 @@
-/// One-shot suspension by composition — a handler that blocks on
-/// `std.Io.Queue` turns a plain tail-resumptive effect into a generator.
-/// The caller's coroutine stack is the continuation; efx needs nothing
-/// beyond ordinary dispatch. Call sites are identical for the pure
-/// array-backed handler and the suspending stream-backed handler.
+//! A handler that blocks on `std.Io.Queue` turns a plain effect into a stream.
+//! The caller waits inside `exec` until a producer delivers the next item, so
+//! this is ordinary blocking: the handler never holds a continuation, and it
+//! returns to its caller like any other. Call sites are identical for the pure
+//! array-backed handler and the blocking stream-backed handler.
+//!
+//! A single `next` op is just an interface, and for plain iteration an
+//! `anytype` iterator is simpler. The effect earns its place when a call stack
+//! that already carries a scope needs a source that may block.
 const std = @import("std");
 const efx = @import("efx");
 
@@ -34,9 +38,7 @@ const ArraySource = struct {
     }
 };
 
-/// Io-backed — `getOne` suspends the calling coroutine until a producer
-/// puts an item. From the caller's perspective this is a one-shot effect:
-/// perform, suspend, resume with a value.
+/// Io-backed — `getOne` blocks the calling task until a producer puts an item.
 const StreamSource = struct {
     io: std.Io,
     queue: *std.Io.Queue(u64),
@@ -75,7 +77,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("stream sum: {d}\n", .{try sumAll(&sc_stream)});
 }
 
-// ── Tests: deterministic, no Io required ────────────────────────────
+// ── Tests ───────────────────────────────────────────────────────────
 
 test "sumAll drains the source" {
     var arr = ArraySource{ .items = &.{ 10, 20, 30 } };
@@ -87,4 +89,16 @@ test "empty source yields zero" {
     var arr = ArraySource{ .items = &.{} };
     const sc = efx.Scope.init(.{.{ Source, &arr }});
     try std.testing.expectEqual(@as(u64, 0), try sumAll(&sc));
+}
+
+test "sumAll suspends on a stream fed by a concurrent producer" {
+    const io = std.testing.io;
+    var buffer: [4]u64 = undefined;
+    var queue = std.Io.Queue(u64).init(&buffer);
+    var producer = try io.concurrent(produce, .{ io, &queue });
+    defer producer.await(io);
+
+    var stream = StreamSource{ .io = io, .queue = &queue };
+    const sc = efx.Scope.init(.{.{ Source, &stream }});
+    try std.testing.expectEqual(@as(u64, 55), try sumAll(&sc));
 }

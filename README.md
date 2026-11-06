@@ -1,17 +1,17 @@
 # efx
 
-Tail-resumptive algebraic effects for Zig. Write programs as sequences of abstract operations and plug in different implementations without changing the logic. Handlers are plain structs. Dispatch is zero-cost. Everything is explicit.
+Tail-resumptive algebraic effects for Zig. Write programs as sequences of abstract operations and plug in different implementations without changing the logic. Handlers are plain structs. Dispatch is one indirect call, about the cost of a hand-written vtable like `std.mem.Allocator`. Everything is explicit.
 
 Effects are a compositional primitive that allows you to model any boundary where you want to decouple logic from implementation:
-- **Observability:** logging, metrics, tracing, feature flags. Still the easiest way to get started. See `examples/logger.zig`.
-- **Testing:** handler structs are the mocks, no framework needed. Capture calls and assert, inject faults, replay from a recorded trace, or run full deterministic simulation. See `examples/dst.zig`.
-- **Data transformation:** validation, transformation, and enrichment as effects. Test each stage in isolation, swap backends without rewiring the pipeline. See `examples/pipeline.zig`.
-- **Protocols:** consensus, replication, TLS handshakes. Write the protocol as effect calls, swap handlers for different backends or transports.
-- **Storage engines:** block device, WAL, page cache as effects. Test B-tree logic against an in-memory handler. Inject write failures after N ops for crash recovery testing.
-- **Networking:** transport, DNS, cert store as effects. Test a protocol state machine with loopback buffers and a virtual clock. No sockets, no timing jitter.
-- **Concurrency:** pass `*const Scope` to spawned threads — no snapshots or restore calls needed. See `examples/concurrent.zig`.
+- **Observability:** logging, metrics, tracing, feature flags. Still the easiest way to get started. See `examples/logger.zig` and `examples/tracing.zig`.
+- **Testing:** handler structs are the mocks, no framework needed. Capture calls and assert, inject faults, or run full deterministic simulation. See `examples/dst.zig`.
+- **Protocols:** consensus, replication, handshakes. Drive the state machine through transport and clock effects, then test it with loopback buffers and a virtual clock: no sockets, no timing jitter. `examples/dst.zig` shows the approach on a small retry loop.
+- **Storage engines:** block device, WAL, page cache as effects. Test against an in-memory handler and inject a crash at every operation. See `examples/storage.zig`.
+- **Concurrency:** pass `*const Scope` to spawned tasks. Handlers shared between tasks must be thread-safe. See `examples/concurrent.zig`.
 
-efx follows the same pattern as Zig's `std.Io` — an explicit capability value passed through the call stack. Rather than creating a full algebraic effect system with continuations, efx creates simple tail-resumptive effects designed to compose naturally with `std.Io` for full algebraic effects. This keeps it a focused ~250 line library.
+Effects suit real boundaries: I/O, time, randomness, anything you'd want to swap in a test. Pure logic such as validation or parsing is better left as plain functions. If a function needs one dependency, passing that dependency directly is simpler; `std.Random` and `std.mem.Allocator` are already swappable interfaces.
+
+efx follows the same pattern as Zig's `std.Io` — an explicit capability value passed through the call stack. efx is not a full algebraic effect system: every handler returns to its caller, and there are no continuations to capture. `std.Io` does not add them, because a handler that blocks on `Io` is still just a blocking call. See `docs/IO_COMPOSITION.md`. This keeps efx a focused ~250 line library.
 
 Inspired by [Effect.ts](https://effect.website) and algebraic effects research by Daan Leijen, specifically [Generalized Evidence Passing](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/) and [Implementing Algebraic Effects in C](https://www.microsoft.com/en-us/research/publication/implementing-algebraic-effects-c/).
 
@@ -48,15 +48,10 @@ Business logic calls `Logger.exec(&scope, .info, "starting")`. It doesn't know o
 
 ## Install
 
-Add to your `build.zig.zon`:
+Requires Zig 0.17. Add it to your `build.zig.zon`:
 
-```zig
-.dependencies = .{
-    .efx = .{
-        .url = "https://github.com/user/efx/archive/refs/tags/v0.1.0.tar.gz",
-        .hash = "...",
-    },
-},
+```sh
+zig fetch --save git+https://github.com/ind-igo/efx
 ```
 
 Then in `build.zig`:
@@ -68,33 +63,68 @@ exe.root_module.addImport("efx", efx);
 
 ## Performance
 
-Benchmarked on Apple Silicon (M-series), `ReleaseFast`, 100M iterations:
+An effect call is an indirect call plus a slot lookup. Handlers cannot be inlined, so use effects at real boundaries. For tight loops, use comptime generics or pass a slice (see [Batch operations](#batch-operations)).
 
-| Pattern | ns/op | ops/sec |
-|---|---|---|
-| Direct function call | 2.2 | 454M |
-| Function pointer call | 2.2 | 454M |
-| **Effect dispatch** | **2.3** | **441M** |
-| 4 effects interleaving | 1.1 | 915M |
-| 16 effects interleaving | 1.1 | 933M |
+Apple M5 Pro, Zig 0.17, `ReleaseFast`. Median of 15 processes; predicted cases also sweep 16 code layouts. Overhead is relative to the same handler body inlined into the loop. Small handlers are three bodies of a few instructions each.
 
-The vtable pointer chase is fully hidden by the CPU. Vtables live in static `.rodata`, stay in L1, and dependent loads are overlapped by the branch predictor. Safe for hot-path use in performance-critical systems.
+| Call kind | Overhead, predicted, small handler | Overhead, ~20-cycle handler | 16 random targets (total ns/op) |
+|---|---|---|---|
+| Comptime generic (inlined) | 0 ns | 0 ns | 6.5 (switch) |
+| Direct call, not inlined | 0.3-0.5 ns | 0 ns | n/a |
+| Hand-written vtable | 0.4-0.6 ns | 0 ns | 7.1 |
+| **Effect dispatch** | **0.45-0.7 ns** | **0 ns** | **7.1** |
 
-Run benchmarks yourself: `zig build bench`
+Without frame pointers the gaps are clearer: direct +0-0.25 ns, vtable +0.2 ns, effect +0.45-0.7 ns. That is about 0, 1 and 2-3 cycles, so a slot lookup costs a cycle or two more than a hand-written vtable. Treat sub-nanosecond differences as approximate: tight call loops on Apple Silicon run a whole number of cycles per iteration, and code layout alone can move a call by a cycle or more.
+
+- Predicted calls overlap with surrounding work, so the cost disappears once a handler does real work.
+- Unpredictable targets cost a branch mispredict, about 6 ns extra. This applies to any runtime dispatch, including a `switch`.
+- With data caches cold, dispatch touches more cache lines than a direct call: about 5 ns more with L1D evicted, and roughly 60-80 ns more with L2 evicted.
+- The optimizer cannot inline through `exec`, so loops lose vectorization and constant folding. A summing loop ran 6-10x slower than a comptime generic.
+- A no-op handler still pays for dispatch.
+
+Good fit: I/O, time, logging, storage and protocol boundaries. Poor fit: one effect call per element in a tight loop.
+
+`zig build bench` runs one quick pass as raw CSV. `bench/run.sh` collects the numbers here; run it on an idle machine.
+
+### Batch operations
+
+An operation can take a slice. One dispatch then covers the whole batch, and the loop inside the handler compiles as an ordinary loop. A remote handler can also turn the batch into a single request.
+
+```zig
+const Lookup = struct { skus: []const u32, prices: []u32 };
+
+const Prices = efx.Effect(union(enum) {
+    lookup: efx.Op(Lookup, error{Unavailable}!void),
+});
+
+try Prices.exec(sc, .lookup, .{ .skus = skus, .prices = prices });
+```
+
+Summing 4096 `u32`s through the same effect, by batch size:
+
+| Elements per dispatch | ns/element |
+|---|---|
+| 1 | 0.74 |
+| 8 | 0.25 |
+| 64 | 0.12 |
+| 4096 | 0.11 |
+| Comptime generic, for comparison | 0.11 |
+
+See `examples/batch.zig`.
 
 ## API
 
 - **`efx.Scope.init(.{ .{ Effect, &handler }, ... })`** — create a scope with handlers bound to effects.
 - **`Effect.exec(&scope, .op, arg)`** — dispatch an operation through the scope's handler. Void args use `{}`.
 - **`scope.bind(Effect, &handler)`** — return a new scope with one handler replaced. The original scope is unchanged.
-- **`efx.Contract(.{ EffectA, EffectB, ... })`** — declare a required set of effects. The returned type has an `init` that works like `Scope.init` but produces a compile error if any listed effect is missing a handler. Useful when a library defines which effects it needs and consumers wire them up in a separate module. See `examples/pipeline.zig`.
+- **`efx.Contract(.{ EffectA, EffectB, ... })`** — declare a required set of effects. The returned type has an `init` that works like `Scope.init` but produces a compile error if any listed effect is missing a handler. Useful when a library defines which effects it needs and consumers wire them up in a separate module. See `examples/storage.zig`.
 - **`efx.Exit(T)`** — handler-directed early exit with a payload. The handler calls `exit.abort(value)` and returns `error.EfxAbort`; business logic propagates it with `try`; the installation site catches it and reads `exit.payload`. Since `error.EfxAbort` is one shared error value, `payload` is only meaningful for the handler you installed — with several abort-capable handlers in one scope, check each handler's payload after catching.
 
 Dispatching an effect with no handler bound panics with a message naming the effect (use `Contract` to catch this at compile time instead).
 
-Handlers may suspend: a handler that blocks on `std.Io.Queue` inside a coroutine turns a plain effect into a generator/stream — the caller's coroutine stack is the continuation. Call sites are unchanged. See `examples/generator.zig` and `docs/IO_COMPOSITION.md`.
+Handlers may block: a handler that waits on `std.Io.Queue` turns a plain effect into a stream, and call sites are unchanged. The caller simply waits inside `exec`. The handler never holds a continuation. See `examples/generator.zig` and `docs/IO_COMPOSITION.md`.
 
-Handlers are plain structs with one method per operation. Handlers that need to call other effects add `sc: *const efx.Scope` as a parameter — the library detects this at comptime and forwards the scope automatically:
+Handlers are plain structs with one method per operation. Handlers that need to call other effects add `sc: *const efx.Scope` as a parameter — the library detects this at comptime and forwards the scope automatically (see `examples/tracing.zig`):
 
 ```zig
 const std = @import("std");
@@ -115,7 +145,7 @@ const AuditLogger = struct {
 };
 ```
 
-For optional behavior, keep the effect in the contract and bind a no-op handler when the behavior is disabled. This keeps dispatch simple and fast: call sites always use `Effect.exec`, and handler choice decides whether anything happens.
+For optional behavior, keep the effect in the contract and bind a no-op handler when the behavior is disabled. This keeps call sites simple: they always use `Effect.exec`, and handler choice decides whether anything happens. A no-op handler still pays for dispatch.
 
 ```zig
 const Metrics = efx.Effect(union(enum) {
