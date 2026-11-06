@@ -1,0 +1,10 @@
+.{
+    .name = .efx_explore,
+    .version = "0.0.0",
+    .fingerprint = 0x84073922e7fe6e64,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .efx = .{ .path = ".." },
+    },
+    .paths = .{""},
+}
