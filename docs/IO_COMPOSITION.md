@@ -97,9 +97,73 @@ to fill the queue, and the handler then returns like any other.
 | Abort the computation                     | Yes                  | `efx.Exit`, through ordinary error returns    |
 | Resume more than once                     | With multi-shot      | No                                            |
 
-Full handlers need a runtime that owns the computation's stack and gives the
-handler a resumable value. efx does not include one, and `std.Io` does not
-expose one as an effect primitive.
+Full handlers need something that owns the computation's stack and gives the
+handler a resumable value. `std.Io` does not expose one as an effect primitive,
+so the separate `efx_cont` module provides it.
+
+## Continuations (`efx_cont`)
+
+`efx_cont` is a fixed pool of stacks with one-shot continuations. It adds what
+the table above is missing and nothing else: no scheduler, and no I/O. efx and
+`efx_cont` don't import each other, because a handler is a plain struct:
+
+```zig
+const Store = efx.Effect(union(enum) {
+    get: efx.Op(u64, std.Io.Cancelable!u64),
+});
+
+const P = efx_cont.Pool(.{ .Request = u64, .Reply = u64 });
+
+const Parking = struct {
+    pool: *P,
+
+    pub fn get(self: *Parking, key: u64) std.Io.Cancelable!u64 {
+        return self.pool.perform(key); // appends a row, then parks
+    }
+};
+```
+
+Business logic can't tell this handler from one that returns at once, or one
+that blocks on `Io`: all three use the same `Op`. Whoever owns the pool drives
+it on its own stack, which is also where its I/O belongs:
+
+```zig
+try pool.spawn(worker, .{ &sc, 7 });
+while (pool.live() != 0) {
+    pool.tick();
+    const batch = pool.take();
+    for (batch.requests, batch.conts) |request, k| {
+        try pool.complete(k, try lookup(io, request));
+    }
+}
+```
+
+A handler that wants the continuation for itself keeps it before parking:
+
+```zig
+self.timers.add(deadline, self.pool.continuation());
+return self.pool.park();
+```
+
+| Capability                              | `efx_cont`                                   |
+|-----------------------------------------|----------------------------------------------|
+| Receive the continuation as a value     | `continuation()`, or the `conts` of a batch  |
+| Run handler code after resuming         | Yes, after `park` returns                    |
+| Keep a continuation and resume it later | `complete(k, value)`, from any point         |
+| Abort the computation                   | `cancel(k)`: `error.Canceled`, `defer`s run  |
+| Resume more than once                   | No: a second resume is `StaleContinuation`   |
+
+- **The handler chooses, not the effect.** An `Op` doesn't say whether it parks,
+  so a test can bind a handler that returns at once.
+- **Nothing is dropped.** `deinit` cancels every live computation, so `defer`s run
+  even if the driver stops early. A `perform` during that cleanup gets
+  `error.Canceled`, so a `defer` can't wait on real work at shutdown. End the pool
+  before the handlers its computations use.
+- **State follows the scope.** A handler bound before `spawn` is shared by every
+  computation given that scope. One bound inside a computation is its own.
+- **One thread at a time.** A pool has no locks. Another thread hands a result to
+  the driver, and the driver calls `complete`.
+- **Stacks are a fixed size.** Running past the end faults on a guard page.
 
 ## Handler-Directed Exit (`efx.Exit`)
 
@@ -179,9 +243,8 @@ Code that genuinely works with files or sockets can take `io` directly.
 
 ## Limits
 
-- **No continuations.** Handlers return to the caller or go up the error path
-  with `efx.Exit`. Full `ctl` operations and multi-shot resumption are out of
-  scope.
+- **One-shot only.** `efx_cont` resumes a continuation once. Multi-shot resumption
+  is out of scope.
 - **No effect rows.** A function taking `*const Scope` may perform any effect.
   A missing handler panics at dispatch rather than failing to compile at the
   call site. `efx.Contract` checks completeness at the wiring site only.

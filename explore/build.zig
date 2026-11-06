@@ -31,6 +31,18 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(b.addExecutable(.{ .name = name, .root_module = mod }));
     }
 
+    const cont_mod = b.dependency("efx", .{ .target = target, .optimize = optimize }).module("efx_cont");
+    const cont_perf = b.createModule(.{
+        .root_source_file = b.path("continuations/cont_perf.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "efx", .module = efx_mod },
+            .{ .name = "efx_cont", .module = cont_mod },
+        },
+    });
+    b.installArtifact(b.addExecutable(.{ .name = "cont_perf", .root_module = cont_perf }));
+
     // The registry's efx reads `root.efx_effects`, so it is its own module.
     const registry = b.createModule(.{
         .root_source_file = b.path("registry/root.zig"),

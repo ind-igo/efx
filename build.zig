@@ -10,10 +10,42 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Continuations are a separate module: efx doesn't import it, or the reverse.
+    const cont_mod = b.addModule("efx_cont", .{
+        .root_source_file = b.path("src/cont.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Tests — core
     const test_step = b.step("test", "Run tests");
     const core_tests = b.addTest(.{ .root_module = efx_mod });
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
+
+    // Continuations, in every build mode: a stack switch can break only once
+    // registers are allocated across it, which Debug never does.
+    for (std.enums.values(std.builtin.OptimizeMode)) |mode| {
+        const mode_efx = b.createModule(.{
+            .root_source_file = efx_mod.root_source_file,
+            .target = target,
+            .optimize = mode,
+        });
+        const mode_cont = b.createModule(.{
+            .root_source_file = cont_mod.root_source_file,
+            .target = target,
+            .optimize = mode,
+        });
+        const mod = b.createModule(.{
+            .root_source_file = b.path("tests/cont.zig"),
+            .target = target,
+            .optimize = mode,
+            .imports = &.{
+                .{ .name = "efx", .module = mode_efx },
+                .{ .name = "efx_cont", .module = mode_cont },
+            },
+        });
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mod })).step);
+    }
 
     // Examples — each is a standalone executable with its own tests
     const examples = [_][]const u8{ "logger", "clock", "dst", "storage", "concurrent", "tracing", "generator", "batch" };

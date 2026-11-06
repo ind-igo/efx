@@ -106,14 +106,41 @@ Traps:
 - **`std` bitsets are by value.** `isSet` on an `ArrayBitSet` can compile to a full
   copy. Here it did, in `ReleaseFast`: `memcpy` of 2 KiB right after the switch.
 
+### Stack colouring
+
+Measured on the `dod` pool with a batch that touches no memory, 3 runs, ns per
+park+resume:
+
+| Tasks | No colouring | 128 colours |
+|-------|--------------|-------------|
+| 256   | 15.1         | 12.1        |
+| 1024  | 21.5         | 15.9        |
+| 4096  | 28.1         | 17.1        |
+
+Page-aligned stacks do alias, and ASLR can't help: it moves mappings by whole
+pages, so the low bits stay equal. M5 Pro only.
+
+### What came out of this
+
+`src/cont.zig` is `dod.zig` made into a module, and `cont_perf` compares them:
+
+| Tasks | `dod` | `cont` | `dod` + efx | `cont` + efx |
+|-------|-------|--------|-------------|--------------|
+| 1     | 6.8   | 6.1    | 7.0         | 7.0          |
+| 16    | 6.9   | 6.4    | 11.2        | 10.5         |
+| 256   | 7.2   | 6.7    | 11.2        | 11.9         |
+| 4096  | 7.6   | 7.6    | 13.8        | 15.7         |
+
 ### Open questions
 
-- **efx inside the pool.** Dispatch adds 1 ns with one task but about 5 ns from 16
-  tasks up, more than a call should. Not explained yet.
+- **A frame between the loop and the park.** efx adds 1 ns with one task but 4-8 ns
+  from 16 tasks up. It isn't efx: making `exec`'s load `.monotonic` changes nothing,
+  and the same two-level call with no efx costs the same (`cont+shape` in
+  `cont_perf`, 10.5 ns against 10.4 at 16 tasks). A single indirect call that
+  inlines the park costs nothing, so it takes real frames. Why it starts at 16
+  tasks is still unexplained.
 - **Lookups are 3-4x a hand-written loop.** Most of that is one park per lookup.
   Whether any of it can go is unmeasured.
-- **Typed requests.** `tiny` carries a `u64` per row. A real add-on needs a typed
-  request and reply, ideally without more lines.
 - **x86_64 speed.** The switch passes every test in all four modes under Rosetta,
   which shows it is correct, not how fast it is. Linux and real x86 hardware are
   untested. The `leaq -128(%rsp)` skips the red zone; aarch64 doesn't need that
