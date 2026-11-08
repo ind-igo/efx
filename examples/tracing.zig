@@ -37,7 +37,7 @@ const Traced = efx.Contract(.{ Trace, Metrics, Clock, Payments });
 
 // ── Business logic ──────────────────────────────────────────────────
 
-fn checkout(sc: *const efx.Scope, total_cents: u64) error{Declined}!void {
+fn checkout(sc: *const Traced, total_cents: u64) error{Declined}!void {
     const span = Trace.exec(sc, .start, .{ .name = "checkout" });
     var status: Status = .err;
     defer Trace.exec(sc, .end, .{ .span = span, .status = status });
@@ -46,7 +46,7 @@ fn checkout(sc: *const efx.Scope, total_cents: u64) error{Declined}!void {
     status = .ok;
 }
 
-fn charge(sc: *const efx.Scope, parent: SpanId, total_cents: u64) error{Declined}!void {
+fn charge(sc: *const Traced, parent: SpanId, total_cents: u64) error{Declined}!void {
     const span = Trace.exec(sc, .start, .{ .name = "charge", .parent = parent });
     var status: Status = .err;
     defer Trace.exec(sc, .end, .{ .span = span, .status = status });

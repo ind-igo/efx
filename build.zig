@@ -58,6 +58,25 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // Misuse of a Contract must not compile. See tests/compile_fail.zig.
+    for ([_]struct { []const u8, []const u8 }{
+        .{ "exec_unlisted", "does not provide" },
+        .{ "from_missing", "does not provide" },
+        .{ "init_missing", "Contract: missing handler" },
+        .{ "bind_unlisted", "does not provide" },
+        .{ "from_plain_scope", "expected a pointer to a Contract" },
+        .{ "exec_by_value", "expected a pointer to a Contract" },
+    }) |case| {
+        const run = b.addSystemCommand(&.{ b.graph.zig_exe, "test", "--dep", "efx" });
+        run.addPrefixedFileArg("-Mroot=", b.path("tests/compile_fail.zig"));
+        run.addPrefixedFileArg("-Mefx=", b.path("src/root.zig"));
+        run.addArgs(&.{ "--test-filter", case[0] });
+        run.has_side_effects = true;
+        run.expectStdErrMatch(case[1]);
+        run.expectExitCode(1);
+        test_step.dependOn(&run.step);
+    }
+
     // Benchmarks: `zig build bench` runs one quick pass as raw CSV.
     // bench/run.sh collects the numbers in the README.
     const bench_step = b.step("bench", "Run a quick benchmark pass");

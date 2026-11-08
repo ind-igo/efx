@@ -117,10 +117,10 @@ See `examples/batch.zig`.
 - **`efx.Scope.init(.{ .{ Effect, &handler }, ... })`** — create a scope with handlers bound to effects.
 - **`Effect.exec(&scope, .op, arg)`** — dispatch an operation through the scope's handler. Void args use `{}`.
 - **`scope.bind(Effect, &handler)`** — return a new scope with one handler replaced. The original scope is unchanged.
-- **`efx.Contract(.{ EffectA, EffectB, ... })`** — declare a required set of effects. The returned type has an `init` that works like `Scope.init` but produces a compile error if any listed effect is missing a handler. Useful when a library defines which effects it needs and consumers wire them up in a separate module. See `examples/storage.zig`.
+- **`efx.Contract(.{ EffectA, EffectB, ... })`** — a `Scope` whose effects the compiler knows. It is the same table at runtime. `App.init` is a compile error if a listed effect has no handler, and in a function taking `sc: *const App`, using an unlisted effect is a compile error too. `Small.from(sc)` views the same table under a smaller list, and fails to compile if the source doesn't list everything. A handler's own `sc` parameter stays a plain `*const efx.Scope`, so calls made inside handlers aren't checked. See `examples/storage.zig`.
 - **`efx.Exit(T)`** — handler-directed early exit with a payload. The handler calls `exit.abort(value)` and returns `error.EfxAbort`; business logic propagates it with `try`; the installation site catches it and reads `exit.payload`. Since `error.EfxAbort` is one shared error value, `payload` is only meaningful for the handler you installed — with several abort-capable handlers in one scope, check each handler's payload after catching.
 
-Dispatching an effect with no handler bound panics with a message naming the effect (use `Contract` to catch this at compile time instead).
+Dispatching an effect with no handler bound through a plain `Scope` panics with a message naming the effect. Use `Contract` to catch this at compile time instead.
 
 Handlers may block: a handler that waits on `std.Io.Queue` turns a plain effect into a stream, and call sites are unchanged. The caller simply waits inside `exec`. The handler never holds a continuation. See `examples/generator.zig` and `docs/IO_COMPOSITION.md`.
 

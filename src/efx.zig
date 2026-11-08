@@ -117,18 +117,21 @@ pub fn Effect(comptime U: type) type {
             return &static.v;
         }
 
+        /// `sc` is a `*const Scope`, or a pointer to a `Contract` that lists this
+        /// effect. The second form makes a missing effect a compile error.
         pub fn exec(
-            sc: *const Scope,
+            sc: anytype,
             comptime op: std.meta.FieldEnum(U),
             arg: op_types[@backingInt(op)].ArgType,
         ) op_types[@backingInt(op)].ResultType {
+            const scope = scopeFor(Self, sc);
             const s = @atomicLoad(usize, &slot, .acquire);
             if (s == UNASSIGNED) @panic("efx: effect was never bound in any scope: " ++ @typeName(U));
-            const entry = sc._slots[s];
+            const entry = scope._slots[s];
             const opaque_vt = entry.vtable orelse @panic("efx: no handler bound in this scope for " ++ @typeName(U));
             const vt: *const Vtable = @ptrCast(@alignCast(opaque_vt));
             const trampoline = @field(vt.*, op_names[@backingInt(op)]);
-            return trampoline(entry.state, sc, arg);
+            return trampoline(entry.state, scope, arg);
         }
     };
 }
@@ -160,16 +163,49 @@ pub const Scope = struct {
     }
 };
 
-// ── Contract — comptime-checked effect bundle ────────────────────────
+// ── Contract — a scope whose effects the compiler knows ──────────────
 
-pub fn Contract(comptime effects: anytype) type {
+/// A `Scope` plus a compile-time list of effects. It is the same table at
+/// runtime; the list only decides what compiles:
+///
+///   const App = efx.Contract(.{ Logger, Clock });
+///   const sc = App.init(.{ .{ Logger, &log }, .{ Clock, &clock } });
+///
+///   fn run(sc: *const App) void { ... }           // may use Logger and Clock
+///   fn tick(sc: *const Timing) void { ... }       // may use only Clock
+///   tick(Timing.from(sc));                        // same table, smaller list
+///
+/// `init` rejects a missing handler, `exec` rejects an effect that isn't listed,
+/// and `from` rejects a source that doesn't list everything. A handler's own
+/// `sc` parameter is a plain `*const Scope`, so its calls are not checked.
+pub fn Contract(comptime list: anytype) type {
     return struct {
-        pub fn init(pairs: anytype) Scope {
-            inline for (effects) |E| {
+        const Self = @This();
+
+        pub const effects = list;
+
+        /// The table itself, for code that takes a plain `*const Scope`.
+        scope: Scope,
+
+        pub fn init(pairs: anytype) Self {
+            inline for (list) |E| {
                 if (comptime !pairsProvide(@TypeOf(pairs), E))
                     @compileError("Contract: missing handler for " ++ @typeName(E));
             }
-            return Scope.init(pairs);
+            return .{ .scope = Scope.init(pairs) };
+        }
+
+        /// Replaces the handler of an effect in the list, returning a copy.
+        pub fn bind(self: *const Self, comptime E: type, handler_ptr: anytype) Self {
+            requireEffect(Self, E);
+            return .{ .scope = self.scope.bind(E, handler_ptr) };
+        }
+
+        /// Views a contract that lists at least these effects as this one.
+        pub fn from(source: anytype) *const Self {
+            const Source = ContractOf(@TypeOf(source));
+            inline for (list) |E| requireEffect(Source, E);
+            return @fieldParentPtr("scope", &source.scope);
         }
 
         fn pairsProvide(comptime Pairs: type, comptime E: type) bool {
@@ -180,6 +216,27 @@ pub fn Contract(comptime effects: anytype) type {
             return false;
         }
     };
+}
+
+fn ContractOf(comptime T: type) type {
+    const info = @typeInfo(T);
+    if (info == .pointer and @typeInfo(info.pointer.child) == .@"struct" and
+        @hasDecl(info.pointer.child, "effects")) return info.pointer.child;
+    @compileError("efx: expected a pointer to a Contract, got " ++ @typeName(T));
+}
+
+fn requireEffect(comptime C: type, comptime E: type) void {
+    const listed = comptime for (C.effects) |Listed| {
+        if (Listed == E) break true;
+    } else false;
+    if (!listed) @compileError("efx: " ++ @typeName(C) ++ " does not provide " ++ @typeName(E));
+}
+
+inline fn scopeFor(comptime E: type, sc: anytype) *const Scope {
+    const T = @TypeOf(sc);
+    if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.child == Scope) return sc;
+    requireEffect(ContractOf(T), E);
+    return &sc.scope;
 }
 
 // ── Exit — handler-directed early exit with a payload ────────────────
@@ -565,9 +622,9 @@ test "contract init succeeds for complete pairs" {
     try testing.expectEqual(@as(usize, 1), logger.call_count);
 }
 
-// ── Test: contract allows extra effects ─────────────────────────────
+// ── Test: extra handlers stay reachable through the plain scope ─────
 
-test "contract allows extra effects" {
+test "contract allows extra handlers" {
     const Proto = Contract(.{TestLogger});
 
     var logger = StderrLoggerHandler{};
@@ -578,7 +635,7 @@ test "contract allows extra effects" {
         .{ TestConfig, &config },
     });
 
-    const val = TestConfig.exec(&sc, .get, "key");
+    const val = TestConfig.exec(&sc.scope, .get, "key");
     try testing.expectEqualStrings("extra", val.?);
 }
 
@@ -634,6 +691,62 @@ test "Exit delivers a payload to the installer" {
     const sc2 = Scope.init(.{.{ Budget, &budget2 }});
     try testing.expectEqual(@as(usize, 3), try spendAll(&sc2, &.{ 4, 3, 3 }));
     try testing.expectEqual(@as(?u64, null), budget2.exit.payload);
+}
+
+test "from narrows a contract to the same table" {
+    const Big = Contract(.{ TestLogger, TestConfig });
+    const Small = Contract(.{TestLogger});
+
+    var logger = StderrLoggerHandler{};
+    var config = MapConfigHandler{ .value = "ok" };
+    const sc = Big.init(.{ .{ TestLogger, &logger }, .{ TestConfig, &config } });
+
+    const small = Small.from(&sc);
+    TestLogger.exec(small, .info, "hello");
+    try testing.expectEqual(@as(usize, 1), logger.call_count);
+    try testing.expectEqual(&sc.scope, &small.scope);
+
+    // Handlers on the table that the list hides are still there for a handler.
+    try testing.expectEqualStrings("ok", TestConfig.exec(&small.scope, .get, "key").?);
+}
+
+test "from accepts a contract with the effects in another order" {
+    const Forward = Contract(.{ TestLogger, TestConfig });
+    const Reverse = Contract(.{ TestConfig, TestLogger });
+
+    var logger = StderrLoggerHandler{};
+    var config = MapConfigHandler{ .value = "ok" };
+    const sc = Forward.init(.{ .{ TestLogger, &logger }, .{ TestConfig, &config } });
+
+    TestLogger.exec(Reverse.from(&sc), .info, "hello");
+    try testing.expectEqual(@as(usize, 1), logger.call_count);
+}
+
+test "bind on a contract leaves the original unchanged" {
+    const App = Contract(.{TestLogger});
+
+    var first = StderrLoggerHandler{};
+    var second = StderrLoggerHandler{};
+    const sc = App.init(.{.{ TestLogger, &first }});
+    const rebound = sc.bind(TestLogger, &second);
+
+    TestLogger.exec(&rebound, .info, "to second");
+    TestLogger.exec(&sc, .info, "to first");
+    try testing.expectEqual(@as(usize, 1), first.call_count);
+    try testing.expectEqual(@as(usize, 1), second.call_count);
+}
+
+test "exec accepts any pointer to a scope or contract" {
+    const App = Contract(.{TestLogger});
+
+    var logger = StderrLoggerHandler{};
+    var sc = App.init(.{.{ TestLogger, &logger }});
+    var aligned: Scope align(4096) = Scope.init(.{.{ TestLogger, &logger }});
+
+    TestLogger.exec(&sc, .info, "mutable contract");
+    TestLogger.exec(&sc.scope, .info, "plain scope");
+    TestLogger.exec(&aligned, .info, "over-aligned scope");
+    try testing.expectEqual(@as(usize, 3), logger.call_count);
 }
 
 test "contract models optional effects with no-op handlers" {

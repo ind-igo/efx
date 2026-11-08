@@ -24,16 +24,16 @@ const Logger = efx.Effect(union(enum) {
     warn: efx.Op([]const u8, void),
 });
 
-/// Everything the WAL needs. Forgetting one is a compile error at the wiring
-/// site rather than a panic on first dispatch.
-const WalEffects = efx.Contract(.{ Disk, Logger });
+/// Everything the WAL may use. Forgetting a handler is a compile error at the
+/// wiring site, and so is using an effect that isn't listed here.
+const Wal = efx.Contract(.{ Disk, Logger });
 
 // ── Write-ahead log ─────────────────────────────────────────────────
 
 const header_len = 8; // u32 payload length + u32 CRC-32, little endian
 
 /// Returns only once `entry` is durable.
-fn put(sc: *const efx.Scope, entry: []const u8) DiskError!void {
+fn put(sc: *const Wal, entry: []const u8) DiskError!void {
     var header: [header_len]u8 = undefined;
     std.mem.writeInt(u32, header[0..4], @intCast(entry.len), .little);
     std.mem.writeInt(u32, header[4..8], std.hash.Crc32.hash(entry), .little);
@@ -44,7 +44,7 @@ fn put(sc: *const efx.Scope, entry: []const u8) DiskError!void {
 }
 
 /// Replays the log into `out`, stopping at the first torn or corrupt record.
-fn recover(sc: *const efx.Scope, buf: []u8, out: [][]const u8) DiskError![]const []const u8 {
+fn recover(sc: *const Wal, buf: []u8, out: [][]const u8) DiskError![]const []const u8 {
     const bytes = try Disk.exec(sc, .read_all, buf);
     var pos: usize = 0;
     var count: usize = 0;
@@ -124,7 +124,7 @@ const MemDisk = struct {
 /// leaving half of the in-flight append behind. The wrapper knows nothing
 /// about the disk under it, so it works on `MemDisk` and `FileDisk` alike.
 const CrashAfter = struct {
-    inner: *const efx.Scope,
+    inner: *const Wal,
     ops_left: usize,
 
     pub fn append(self: *CrashAfter, bytes: []const u8) DiskError!void {
@@ -165,7 +165,7 @@ test "every acknowledged write survives a crash at any point" {
         for (0..entries.len * ops_per_put + 1) |crash_at| {
             var disk = MemDisk{};
             var log = TestLogger{};
-            const base = WalEffects.init(.{ .{ Disk, &disk }, .{ Logger, &log } });
+            const base = Wal.init(.{ .{ Disk, &disk }, .{ Logger, &log } });
 
             var crash = CrashAfter{ .inner = &base, .ops_left = crash_at };
             const sc = base.bind(Disk, &crash);
@@ -193,7 +193,7 @@ test "every acknowledged write survives a crash at any point" {
 test "recovery stops at a corrupt record and warns" {
     var disk = MemDisk{};
     var log = TestLogger{};
-    const sc = WalEffects.init(.{ .{ Disk, &disk }, .{ Logger, &log } });
+    const sc = Wal.init(.{ .{ Disk, &disk }, .{ Logger, &log } });
 
     try put(&sc, "good");
     try put(&sc, "bad");
@@ -221,7 +221,7 @@ pub fn main(init: std.process.Init) !void {
 
     var disk = FileDisk{ .io = io, .file = file };
     var log = StderrLogger{};
-    const sc = WalEffects.init(.{ .{ Disk, &disk }, .{ Logger, &log } });
+    const sc = Wal.init(.{ .{ Disk, &disk }, .{ Logger, &log } });
 
     for (entries) |entry| try put(&sc, entry);
 

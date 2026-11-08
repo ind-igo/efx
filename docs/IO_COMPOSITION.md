@@ -182,8 +182,9 @@ Code that genuinely works with files or sockets can take `io` directly.
 - **No continuations.** Handlers return to the caller or go up the error path
   with `efx.Exit`. Full `ctl` operations and multi-shot resumption are out of
   scope.
-- **No effect rows.** A function taking `*const Scope` may perform any effect.
-  A missing handler panics at dispatch rather than failing to compile at the
-  call site. `efx.Contract` checks completeness at the wiring site only.
+- **Contracts are lists, not inferred rows.** A function taking `*const App` may
+  use anything in `App`, so its signature shows its group's effects, not exactly
+  what it uses. A plain `*const Scope` is unchecked, as is a handler's own `sc`,
+  and a missing handler there panics at dispatch.
 - **`std.Io` is young.** Validated against Zig 0.17.0. The
   `concurrent`/`Queue`/`Future` surface may still change.

@@ -21,6 +21,9 @@ const Random = efx.Effect(union(enum) {
     at_most: efx.Op(u64, u64),
 });
 
+/// Everything the retry logic may use.
+const Retry = efx.Contract(.{ Upstream, Clock, Random });
+
 // ── Business logic ──────────────────────────────────────────────────
 
 const RetryResult = struct {
@@ -29,7 +32,7 @@ const RetryResult = struct {
     elapsed_ms: i64,
 };
 
-fn callWithRetry(sc: *const efx.Scope, max_attempts: u32, base_delay_ms: u64) RetryResult {
+fn callWithRetry(sc: *const Retry, max_attempts: u32, base_delay_ms: u64) RetryResult {
     const start = Clock.exec(sc, .now_ms, {});
     var attempt: u32 = 1;
     while (true) : (attempt += 1) {
@@ -102,7 +105,7 @@ const Simulator = struct {
         return value;
     }
 
-    fn scope(self: *Simulator) efx.Scope {
+    fn scope(self: *Simulator) Retry {
         return .init(.{ .{ Upstream, self }, .{ Clock, self }, .{ Random, self } });
     }
 };
