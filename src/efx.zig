@@ -61,6 +61,8 @@ pub fn Effect(comptime U: type) type {
         const Self = @This();
 
         pub const Union = U;
+        /// The effect's declared name, such as `app.Logger`, for messages.
+        pub const name = effectName(@typeName(U));
         pub var slot: usize = UNASSIGNED;
 
         /// Assign a slot index for this effect, or return the existing one.
@@ -82,32 +84,32 @@ pub fn Effect(comptime U: type) type {
         pub fn makeVtable(comptime H: type) *const Vtable {
             const vtable = comptime blk: {
                 var vt: Vtable = undefined;
-                for (op_names, op_types) |name, OpType| {
-                    if (!@hasDecl(H, name)) {
-                        @compileError("Handler '" ++ @typeName(H) ++ "' is missing method '" ++ name ++ "'");
+                for (op_names, op_types) |op_name, OpType| {
+                    if (!@hasDecl(H, op_name)) {
+                        @compileError("Handler '" ++ @typeName(H) ++ "' is missing method '" ++ op_name ++ "'");
                     }
-                    const method = @field(H, name);
+                    const method = @field(H, op_name);
                     const MethodInfo = @typeInfo(@TypeOf(method)).@"fn";
                     const has_arg = OpType.ArgType != void;
                     const base_params: usize = if (has_arg) 2 else 1;
 
-                    const wants_scope = if (MethodInfo.param_types.len == base_params + 1) true else if (MethodInfo.param_types.len == base_params) false else @compileError("Handler method '" ++ name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
+                    const wants_scope = if (MethodInfo.param_types.len == base_params + 1) true else if (MethodInfo.param_types.len == base_params) false else @compileError("Handler method '" ++ op_name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
 
                     if (MethodInfo.return_type != OpType.ResultType) {
-                        @compileError("Handler method '" ++ name ++ "' on '" ++ @typeName(H) ++ "' has wrong return type");
+                        @compileError("Handler method '" ++ op_name ++ "' on '" ++ @typeName(H) ++ "' has wrong return type");
                     }
 
                     const trampoline = struct {
                         fn call(opaque_ptr: *anyopaque, sc: *const Scope, arg: OpType.ArgType) OpType.ResultType {
                             const self: *H = @ptrCast(@alignCast(opaque_ptr));
                             if (wants_scope) {
-                                if (has_arg) return @field(H, name)(self, sc, arg) else return @field(H, name)(self, sc);
+                                if (has_arg) return @field(H, op_name)(self, sc, arg) else return @field(H, op_name)(self, sc);
                             } else {
-                                if (has_arg) return @field(H, name)(self, arg) else return @field(H, name)(self);
+                                if (has_arg) return @field(H, op_name)(self, arg) else return @field(H, op_name)(self);
                             }
                         }
                     };
-                    @field(vt, name) = &trampoline.call;
+                    @field(vt, op_name) = &trampoline.call;
                 }
                 break :blk vt;
             };
@@ -119,16 +121,16 @@ pub fn Effect(comptime U: type) type {
 
         /// `sc` is a `*const Scope`, or a pointer to a `Contract` that lists this
         /// effect. The second form makes a missing effect a compile error.
-        pub fn exec(
+        pub inline fn exec(
             sc: anytype,
             comptime op: std.meta.FieldEnum(U),
             arg: op_types[@backingInt(op)].ArgType,
         ) op_types[@backingInt(op)].ResultType {
             const scope = scopeFor(Self, sc);
             const s = @atomicLoad(usize, &slot, .acquire);
-            if (s == UNASSIGNED) @panic("efx: effect was never bound in any scope: " ++ @typeName(U));
+            if (s == UNASSIGNED) @panic("efx: effect was never bound in any scope: " ++ name);
             const entry = scope._slots[s];
-            const opaque_vt = entry.vtable orelse @panic("efx: no handler bound in this scope for " ++ @typeName(U));
+            const opaque_vt = entry.vtable orelse @panic("efx: no handler bound in this scope for " ++ name);
             const vt: *const Vtable = @ptrCast(@alignCast(opaque_vt));
             const trampoline = @field(vt.*, op_names[@backingInt(op)]);
             return trampoline(entry.state, scope, arg);
@@ -190,21 +192,27 @@ pub fn Contract(comptime list: anytype) type {
         pub fn init(pairs: anytype) Self {
             inline for (list) |E| {
                 if (comptime !pairsProvide(@TypeOf(pairs), E))
-                    @compileError("Contract: missing handler for " ++ @typeName(E));
+                    @compileError("efx: " ++ describe(Self) ++ ".init has no handler for " ++ E.name ++
+                        ". Add .{ " ++ shortName(E.name) ++ ", &handler }.");
             }
             return .{ .scope = Scope.init(pairs) };
         }
 
         /// Replaces the handler of an effect in the list, returning a copy.
         pub fn bind(self: *const Self, comptime E: type, handler_ptr: anytype) Self {
-            requireEffect(Self, E);
+            if (comptime !lists(Self, E))
+                @compileError("efx: cannot bind " ++ E.name ++ ": it is not listed in " ++ describe(Self) ++ ".");
             return .{ .scope = self.scope.bind(E, handler_ptr) };
         }
 
         /// Views a contract that lists at least these effects as this one.
         pub fn from(source: anytype) *const Self {
             const Source = ContractOf(@TypeOf(source));
-            inline for (list) |E| requireEffect(Source, E);
+            inline for (list) |E| {
+                if (comptime !lists(Source, E))
+                    @compileError("efx: cannot view " ++ describe(Source) ++ " as " ++ describe(Self) ++
+                        ": " ++ E.name ++ " is missing from the source.");
+            }
             return @fieldParentPtr("scope", &source.scope);
         }
 
@@ -220,22 +228,50 @@ pub fn Contract(comptime list: anytype) type {
 
 fn ContractOf(comptime T: type) type {
     const info = @typeInfo(T);
-    if (info == .pointer and @typeInfo(info.pointer.child) == .@"struct" and
-        @hasDecl(info.pointer.child, "effects")) return info.pointer.child;
-    @compileError("efx: expected a pointer to a Contract, got " ++ @typeName(T));
+    if (info == .pointer and isContract(info.pointer.child)) return info.pointer.child;
+    if (isContract(T)) @compileError("efx: pass the Contract by pointer (&sc), not by value.");
+    if (info == .pointer and info.pointer.child == Scope)
+        @compileError("efx: expected a pointer to a Contract, got a plain Scope, which has no list to check.");
+    @compileError("efx: expected a *const Scope or a pointer to a Contract, got " ++ @typeName(T) ++ ".");
 }
 
-fn requireEffect(comptime C: type, comptime E: type) void {
-    const listed = comptime for (C.effects) |Listed| {
+fn isContract(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasDecl(T, "effects") and @hasField(T, "scope");
+}
+
+fn lists(comptime C: type, comptime E: type) bool {
+    return for (C.effects) |Listed| {
         if (Listed == E) break true;
     } else false;
-    if (!listed) @compileError("efx: " ++ @typeName(C) ++ " does not provide " ++ @typeName(E));
+}
+
+/// `Contract(app.Logger, app.Clock)`, instead of the compiler's long type name.
+fn describe(comptime C: type) []const u8 {
+    comptime var out: []const u8 = "Contract(";
+    inline for (C.effects, 0..) |E, i| out = out ++ (if (i == 0) "" else ", ") ++ E.name;
+    return out ++ ")";
+}
+
+/// Zig names `const Logger = Effect(union(enum) {...})`'s union
+/// `app.Logger__union_123`. Keep the part people wrote.
+fn effectName(comptime full: []const u8) []const u8 {
+    const end = std.mem.indexOf(u8, full, "__union_") orelse full.len;
+    return full[0..end];
+}
+
+/// `app.Logger` becomes `Logger`, as it is written at the wiring site.
+fn shortName(comptime full: []const u8) []const u8 {
+    const start = if (std.mem.lastIndexOfScalar(u8, full, '.')) |dot| dot + 1 else 0;
+    return full[start..];
 }
 
 inline fn scopeFor(comptime E: type, sc: anytype) *const Scope {
     const T = @TypeOf(sc);
     if (@typeInfo(T) == .pointer and @typeInfo(T).pointer.child == Scope) return sc;
-    requireEffect(ContractOf(T), E);
+    const C = ContractOf(T);
+    if (comptime !lists(C, E))
+        @compileError("efx: " ++ E.name ++ " is not listed in " ++ describe(C) ++
+            ". Add it where the Contract is declared, or call this through a Contract that lists it.");
     return &sc.scope;
 }
 

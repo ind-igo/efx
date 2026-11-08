@@ -60,12 +60,12 @@ pub fn build(b: *std.Build) void {
 
     // Misuse of a Contract must not compile. See tests/compile_fail.zig.
     for ([_]struct { []const u8, []const u8 }{
-        .{ "exec_unlisted", "does not provide" },
-        .{ "from_missing", "does not provide" },
-        .{ "init_missing", "Contract: missing handler" },
-        .{ "bind_unlisted", "does not provide" },
-        .{ "from_plain_scope", "expected a pointer to a Contract" },
-        .{ "exec_by_value", "expected a pointer to a Contract" },
+        .{ "exec_unlisted", "is not listed in Contract(compile_fail.Clock)" },
+        .{ "from_missing", "compile_fail.Log is missing from the source" },
+        .{ "init_missing", "has no handler for compile_fail.Log" },
+        .{ "bind_unlisted", "cannot bind compile_fail.Log" },
+        .{ "from_plain_scope", "a plain Scope, which has no list" },
+        .{ "exec_by_value", "by pointer (&sc)" },
     }) |case| {
         const run = b.addSystemCommand(&.{ b.graph.zig_exe, "test", "--dep", "efx" });
         run.addPrefixedFileArg("-Mroot=", b.path("tests/compile_fail.zig"));
