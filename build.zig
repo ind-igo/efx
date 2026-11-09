@@ -65,6 +65,9 @@ pub fn build(b: *std.Build) void {
         .{ "init_missing", "has no handler for compile_fail.Log" },
         .{ "bind_unlisted", "cannot bind compile_fail.Log" },
         .{ "from_plain_scope", "a plain Scope, which has no list" },
+        .{ "handler_uses_unlisted_init", "LoggingClock handles compile_fail.Clock and uses compile_fail.Log, which is not listed in Contract(compile_fail.Clock)" },
+        .{ "handler_uses_unlisted_bind", "LoggingClock handles compile_fail.Clock and uses compile_fail.Log" },
+        .{ "handler_wrong_scope_param", "sc must be a *const efx.Scope or a *const Contract" },
         .{ "exec_by_value", "by pointer (&sc)" },
     }) |case| {
         const run = b.addSystemCommand(&.{ b.graph.zig_exe, "test", "--dep", "efx" });

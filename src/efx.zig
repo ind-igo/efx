@@ -15,7 +15,7 @@ const UNASSIGNED = std.math.maxInt(usize);
 
 var next_slot: usize = 0;
 
-pub const Slot = struct {
+pub const Slot = extern struct {
     state: *anyopaque = undefined,
     vtable: ?*const anyopaque = null,
 };
@@ -88,12 +88,10 @@ pub fn Effect(comptime U: type) type {
                     if (!@hasDecl(H, op_name)) {
                         @compileError("Handler '" ++ @typeName(H) ++ "' is missing method '" ++ op_name ++ "'");
                     }
-                    const method = @field(H, op_name);
-                    const MethodInfo = @typeInfo(@TypeOf(method)).@"fn";
+                    const MethodInfo = @typeInfo(@TypeOf(@field(H, op_name))).@"fn";
                     const has_arg = OpType.ArgType != void;
-                    const base_params: usize = if (has_arg) 2 else 1;
-
-                    const wants_scope = if (MethodInfo.param_types.len == base_params + 1) true else if (MethodInfo.param_types.len == base_params) false else @compileError("Handler method '" ++ op_name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
+                    const ScopeParam = handlerScope(H, op_name, has_arg);
+                    const wants_scope = ScopeParam != void;
 
                     if (MethodInfo.return_type != OpType.ResultType) {
                         @compileError("Handler method '" ++ op_name ++ "' on '" ++ @typeName(H) ++ "' has wrong return type");
@@ -103,7 +101,9 @@ pub fn Effect(comptime U: type) type {
                         fn call(opaque_ptr: *anyopaque, sc: *const Scope, arg: OpType.ArgType) OpType.ResultType {
                             const self: *H = @ptrCast(@alignCast(opaque_ptr));
                             if (wants_scope) {
-                                if (has_arg) return @field(H, op_name)(self, sc, arg) else return @field(H, op_name)(self, sc);
+                                // A Contract is laid out exactly as the Scope it wraps.
+                                const typed: ScopeParam = @ptrCast(sc);
+                                if (has_arg) return @field(H, op_name)(self, typed, arg) else return @field(H, op_name)(self, typed);
                             } else {
                                 if (has_arg) return @field(H, op_name)(self, arg) else return @field(H, op_name)(self);
                             }
@@ -140,7 +140,7 @@ pub fn Effect(comptime U: type) type {
 
 // ── Scope — explicit effect scope ─────────────────────────────────────
 
-pub const Scope = struct {
+pub const Scope = extern struct {
     _slots: [MAX_EFFECTS]Slot = @splat(Slot{}),
 
     pub fn init(pairs: anytype) Scope {
@@ -178,10 +178,17 @@ pub const Scope = struct {
 ///   tick(Timing.from(sc));                        // same table, smaller list
 ///
 /// `init` rejects a missing handler, `exec` rejects an effect that isn't listed,
-/// and `from` rejects a source that doesn't list everything. A handler's own
-/// `sc` parameter is a plain `*const Scope`, so its calls are not checked.
+/// and `from` rejects a source that doesn't list everything.
+///
+/// A handler that calls other effects can take its `sc` as a Contract too:
+///
+///   pub fn start(self: *Tracer, sc: *const efx.Contract(.{Clock}), ...) ...
+///
+/// Installing that handler with `init` or `bind` then fails to compile unless
+/// this contract lists `Clock`. A handler taking a plain `*const Scope` is not
+/// checked, and neither is a handler installed into a plain `Scope`.
 pub fn Contract(comptime list: anytype) type {
-    return struct {
+    return extern struct {
         const Self = @This();
 
         pub const effects = list;
@@ -195,6 +202,7 @@ pub fn Contract(comptime list: anytype) type {
                     @compileError("efx: " ++ describe(Self) ++ ".init has no handler for " ++ E.name ++
                         ". Add .{ " ++ shortName(E.name) ++ ", &handler }.");
             }
+            inline for (pairs) |pair| checkHandler(Self, pair[0], HandlerType(@TypeOf(pair[1])));
             return .{ .scope = Scope.init(pairs) };
         }
 
@@ -202,6 +210,7 @@ pub fn Contract(comptime list: anytype) type {
         pub fn bind(self: *const Self, comptime E: type, handler_ptr: anytype) Self {
             if (comptime !lists(Self, E))
                 @compileError("efx: cannot bind " ++ E.name ++ ": it is not listed in " ++ describe(Self) ++ ".");
+            checkHandler(Self, E, HandlerType(@TypeOf(handler_ptr)));
             return .{ .scope = self.scope.bind(E, handler_ptr) };
         }
 
@@ -213,7 +222,7 @@ pub fn Contract(comptime list: anytype) type {
                     @compileError("efx: cannot view " ++ describe(Source) ++ " as " ++ describe(Self) ++
                         ": " ++ E.name ++ " is missing from the source.");
             }
-            return @fieldParentPtr("scope", &source.scope);
+            return @ptrCast(&source.scope);
         }
 
         fn pairsProvide(comptime Pairs: type, comptime E: type) bool {
@@ -257,6 +266,37 @@ fn describe(comptime C: type) []const u8 {
 fn effectName(comptime full: []const u8) []const u8 {
     const end = std.mem.indexOf(u8, full, "__union_") orelse full.len;
     return full[0..end];
+}
+
+/// The type of a handler method's `sc` parameter, or `void` if it has none.
+fn handlerScope(comptime H: type, comptime op_name: []const u8, comptime has_arg: bool) type {
+    const params = @typeInfo(@TypeOf(@field(H, op_name))).@"fn".param_types;
+    const base: usize = if (has_arg) 2 else 1;
+    if (params.len == base) return void;
+    if (params.len != base + 1)
+        @compileError("Handler method '" ++ op_name ++ "' on '" ++ @typeName(H) ++ "' has wrong number of parameters");
+    const P = params[1].?;
+    if (P == *const Scope) return P;
+    const info = @typeInfo(P);
+    if (info == .pointer and info.pointer.attrs.@"const" and isContract(info.pointer.child)) return P;
+    @compileError("Handler method '" ++ op_name ++ "' on '" ++ @typeName(H) ++
+        "': sc must be a *const efx.Scope or a *const Contract, got " ++ @typeName(P));
+}
+
+/// A handler installed into contract `K` may only use effects `K` lists.
+fn checkHandler(comptime K: type, comptime E: type, comptime H: type) void {
+    const op_names = @typeInfo(E.Union).@"union".field_names;
+    const op_types = @typeInfo(E.Union).@"union".field_types;
+    inline for (op_names, op_types) |op_name, OpType| {
+        if (!@hasDecl(H, op_name)) continue; // makeVtable reports this
+        const P = handlerScope(H, op_name, OpType.ArgType != void);
+        if (P == void or P == *const Scope) continue;
+        inline for (@typeInfo(P).pointer.child.effects) |Used| {
+            if (comptime !lists(K, Used))
+                @compileError("efx: " ++ shortName(@typeName(H)) ++ " handles " ++ E.name ++ " and uses " ++
+                    Used.name ++ ", which is not listed in " ++ describe(K) ++ ".");
+        }
+    }
 }
 
 /// `app.Logger` becomes `Logger`, as it is written at the wiring site.
@@ -783,6 +823,32 @@ test "exec accepts any pointer to a scope or contract" {
     TestLogger.exec(&sc.scope, .info, "plain scope");
     TestLogger.exec(&aligned, .info, "over-aligned scope");
     try testing.expectEqual(@as(usize, 3), logger.call_count);
+}
+
+const ContractCallingHandler = struct {
+    pub fn log_and_count(_: *ContractCallingHandler, sc: *const Contract(.{CrossEffectCounter}), _: []const u8) void {
+        CrossEffectCounter.exec(sc, .inc, {});
+    }
+};
+
+test "a handler can take its scope as a contract" {
+    const App = Contract(.{ CrossEffectLogger, CrossEffectCounter });
+
+    var counter = CounterHandler{};
+    var logger = ContractCallingHandler{};
+    const sc = App.init(.{ .{ CrossEffectLogger, &logger }, .{ CrossEffectCounter, &counter } });
+    CrossEffectLogger.exec(&sc, .log_and_count, "hello");
+
+    // bind checks the replacement the same way.
+    var other = ContractCallingHandler{};
+    const rebound = sc.bind(CrossEffectLogger, &other);
+    CrossEffectLogger.exec(&rebound, .log_and_count, "again");
+
+    // Through a plain scope it still runs, unchecked.
+    const plain = Scope.init(.{ .{ CrossEffectLogger, &logger }, .{ CrossEffectCounter, &counter } });
+    CrossEffectLogger.exec(&plain, .log_and_count, "plain");
+
+    try testing.expectEqual(@as(usize, 3), counter.count);
 }
 
 test "contract models optional effects with no-op handlers" {

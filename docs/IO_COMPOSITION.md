@@ -184,7 +184,7 @@ Code that genuinely works with files or sockets can take `io` directly.
   scope.
 - **Contracts are lists, not inferred rows.** A function taking `*const App` may
   use anything in `App`, so its signature shows its group's effects, not exactly
-  what it uses. A plain `*const Scope` is unchecked, as is a handler's own `sc`,
-  and a missing handler there panics at dispatch.
+  what it uses. A plain `*const Scope` is unchecked, as is a handler taking one
+  or installed into one, and a missing handler there panics at dispatch.
 - **`std.Io` is young.** Validated against Zig 0.17.0. The
   `concurrent`/`Queue`/`Future` surface may still change.

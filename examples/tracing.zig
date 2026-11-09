@@ -57,15 +57,18 @@ fn charge(sc: *const Traced, parent: SpanId, total_cents: u64) error{Declined}!v
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-/// Used unchanged in production and tests. Takes `sc` so it can dispatch to
-/// `Clock` and `Metrics`. Not thread-safe; see `examples/concurrent.zig`.
+/// Used unchanged in production and tests. Takes `sc` to dispatch to
+/// `Clock` and `Metrics`, so installing it into a contract without them fails
+/// to compile. Not thread-safe; see `examples/concurrent.zig`.
 const SpanTracer = struct {
+    const Uses = efx.Contract(.{ Clock, Metrics });
+
     const Span = struct { name: []const u8, parent: SpanId, started_ms: i64, status: ?Status = null };
 
     spans: [16]Span = undefined,
     len: u32 = 0,
 
-    pub fn start(self: *SpanTracer, sc: *const efx.Scope, args: Start) SpanId {
+    pub fn start(self: *SpanTracer, sc: *const Uses, args: Start) SpanId {
         if (self.len == self.spans.len) return .none;
         self.spans[self.len] = .{
             .name = args.name,
@@ -76,7 +79,7 @@ const SpanTracer = struct {
         return @fromBackingInt(@intCast(self.len));
     }
 
-    pub fn end(self: *SpanTracer, sc: *const efx.Scope, args: End) void {
+    pub fn end(self: *SpanTracer, sc: *const Uses, args: End) void {
         if (args.span == .none) return;
         const span = self.get(args.span);
         span.status = args.status;

@@ -27,10 +27,26 @@ fn deepUseLog(sc: *const Small) void {
 
 fn wantsBig(_: *const Big) void {}
 
+/// Handles Clock and uses Log, so it needs a contract that lists Log.
+const LoggingClock = struct {
+    pub fn now(_: *LoggingClock, sc: *const efx.Contract(.{Log})) i64 {
+        Log.exec(sc, .info, {});
+        return 1;
+    }
+};
+
+const WrongScopeParam = struct {
+    pub fn now(_: *WrongScopeParam, _: *efx.Scope) i64 {
+        return 1;
+    }
+};
+
 test "control" {
     var h = Handler{};
     const big = Big.init(.{ .{ Clock, &h }, .{ Log, &h } });
     _ = Clock.exec(Small.from(&big), .now, {});
+    var clock = LoggingClock{};
+    _ = Big.init(.{ .{ Clock, &clock }, .{ Log, &h } });
 }
 
 test "exec_unlisted" {
@@ -60,6 +76,23 @@ test "from_plain_scope" {
     var h = Handler{};
     const sc = efx.Scope.init(.{.{ Clock, &h }});
     _ = Small.from(&sc);
+}
+
+test "handler_uses_unlisted_init" {
+    var clock = LoggingClock{};
+    _ = Small.init(.{.{ Clock, &clock }});
+}
+
+test "handler_uses_unlisted_bind" {
+    var h = Handler{};
+    var clock = LoggingClock{};
+    const sc = Small.init(.{.{ Clock, &h }});
+    _ = sc.bind(Clock, &clock);
+}
+
+test "handler_wrong_scope_param" {
+    var h = WrongScopeParam{};
+    _ = efx.Scope.init(.{.{ Clock, &h }});
 }
 
 test "exec_by_value" {
